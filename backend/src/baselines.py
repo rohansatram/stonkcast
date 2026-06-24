@@ -14,6 +14,7 @@ costs nothing after the first run for a sector.
 import logging
 import math
 import statistics
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import polars as pl
@@ -24,6 +25,7 @@ from metrics import compute_metrics
 logger = logging.getLogger(__name__)
 
 MIN_PEERS_FOR_BASELINE = 3  # need a few peers for a meaningful distribution
+MAX_FETCH_WORKERS = 6  # peers fetched concurrently; bounded so we don't trip yfinance throttling
 
 # yfinance's 11 sector names -> representative large/liquid baskets.
 SECTOR_BASKETS: dict[str, list[str]] = {
@@ -96,16 +98,25 @@ def sector_baseline(sector: str, cutoff: datetime, spy_prices: pl.DataFrame,
     baseline_metrics = list(METRIC_DIRECTION) + ["volatility"]  # volatility feeds confidence
     values_by_metric: dict[str, list[float]] = {metric: [] for metric in baseline_metrics}
 
-    dropped: list[tuple[str, str]] = []
-    for peer in peers:
+    # Fetch peers concurrently: each is independent network I/O (the cold-start
+    # bottleneck). Bounded workers keep us under yfinance's throttle. The disk
+    # cache is safe here (one file per ticker, atomic writes), and compute_metrics
+    # is pure, so this parallelises cleanly.
+    def _peer_metrics(peer: str) -> tuple[str, dict | None, str | None]:
         try:
             peer_data = fetch_cached(peer, refresh=refresh)
             peer_metrics = compute_metrics(peer_data, spy_prices, cutoff)
         except Exception as exc:  # keep one bad peer from sinking the basket, but don't hide it
-            dropped.append((peer, type(exc).__name__))
-            continue
+            return peer, None, type(exc).__name__
+        return (peer, peer_metrics, None) if peer_metrics is not None else (peer, None, "no_metrics")
+
+    with ThreadPoolExecutor(max_workers=min(MAX_FETCH_WORKERS, max(1, len(peers)))) as pool:
+        peer_results = list(pool.map(_peer_metrics, peers))
+
+    dropped: list[tuple[str, str]] = []
+    for peer, peer_metrics, error in peer_results:
         if peer_metrics is None:
-            dropped.append((peer, "no_metrics"))
+            dropped.append((peer, error))
             continue
         for metric in baseline_metrics:
             values_by_metric[metric].append(peer_metrics.get(metric))

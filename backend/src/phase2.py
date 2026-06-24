@@ -17,6 +17,7 @@ and per-request token counts + cost (for the UI's token counter).
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from phase1 import score_ticker, DEFAULT_CUTOFF
@@ -167,13 +168,16 @@ def score_ticker_v2(ticker: str, cutoff: datetime = DEFAULT_CUTOFF,
         if on_stage:
             on_stage(message)
 
-    emit("Fetching market data and computing quant score...")
-    phase1_result = score_ticker(ticker, cutoff, refresh=refresh)
+    # The quant score and the SEC filing fetch are independent, so run them
+    # concurrently (the filing's network time hides under Phase 1's).
+    emit("Computing quant score and fetching SEC filing...")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        phase1_future = pool.submit(score_ticker, ticker, cutoff, refresh=refresh)
+        filing_future = pool.submit(fetch_filing, ticker, cutoff, refresh=refresh)
+        phase1_result = phase1_future.result()
+        filing = filing_future.result()
     if "error" in phase1_result:
         return phase1_result
-
-    emit("Fetching SEC filing...")
-    filing = fetch_filing(ticker, cutoff, refresh=refresh)
     filing_block = filing.get("filing") or {}
 
     emit("Reasoning with Amazon Nova...")

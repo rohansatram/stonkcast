@@ -19,6 +19,7 @@ import hashlib
 import json
 import math
 import statistics
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import polars as pl
@@ -29,6 +30,8 @@ import scoring
 
 UTC = timezone.utc
 HORIZON_DAYS = 182  # ~6 months, matching the contest's Jan->Jun window
+MAX_JOB_WORKERS = 6   # (ticker, cutoff) jobs run concurrently; bounded for yfinance/Bedrock limits
+MAX_WARM_WORKERS = 8  # cache pre-warm concurrency
 DEAD_BAND = 0.03    # |alpha| <= this is a true "Hold" outcome (shared with outcome_bucket)
 
 # Default universe = the cached tech + financial baskets (fast first run).
@@ -82,44 +85,65 @@ def _raw_score_of(result: dict) -> float | None:
     return result.get("phase1", {}).get("raw_score")
 
 
+def warm_cache(tickers, max_workers: int = MAX_WARM_WORKERS) -> None:
+    """Fetch each ticker's full history into the disk cache concurrently. Front-loads
+    all network I/O once (bounded), so subsequent scoring is cache-fast. Used by the
+    backtest and the pre-demo warm script. Errors per ticker are swallowed."""
+    def _safe(ticker):
+        try:
+            fetch_cached(ticker)
+        except Exception:
+            pass
+    unique = sorted(set(tickers))
+    with ThreadPoolExecutor(max_workers=min(max_workers, max(1, len(unique)))) as pool:
+        list(pool.map(_safe, unique))
+
+
 def run_backtest(tickers: list[str] | None = None, cutoffs: list[str] | None = None,
                  horizon_days: int = HORIZON_DAYS, scorer=None, score_key: str = "score",
-                 label: str = "phase1") -> dict:
+                 label: str = "phase1", max_workers: int = MAX_JOB_WORKERS) -> dict:
     tickers = tickers or DEFAULT_UNIVERSE
     cutoffs = cutoffs or DEFAULT_CUTOFFS
     scorer = scorer or score_ticker
+
+    # Pre-warm the universe + SPY once (front-loads the cold fetches under one bounded
+    # pool), so the parallel scoring below is mostly cache hits, not nested network.
+    warm_cache(list(tickers) + ["SPY"])
     spy_prices = fetch_cached("SPY")["prices"]
 
-    predictions = []
-    for cutoff_str in cutoffs:
+    def run_one(job: tuple[str, str]) -> dict | None:
+        cutoff_str, ticker = job
         cutoff = datetime.fromisoformat(cutoff_str).replace(tzinfo=UTC)
-        for ticker in tickers:
-            try:
-                result = scorer(ticker, cutoff)
-                if "error" in result:
-                    continue
-                score_value = result.get(score_key)
-                if score_value is None:
-                    continue
-                prices = fetch_cached(ticker)["prices"]
-                alpha = forward_alpha(prices, spy_prices, cutoff, horizon_days)
-                if alpha is None:
-                    continue
-            except Exception:
-                continue
-            predictions.append({
-                "ticker": ticker,
-                "cutoff": cutoff_str,
-                "sector": result.get("sector"),
-                "score": score_value,
-                "raw_score": _raw_score_of(result),
-                "confidence": result.get("confidence"),
-                "actual_alpha": round(alpha, 4),
-                "true_bucket": outcome_bucket(alpha),
-                "tokens": result.get("tokens", 0),
-                "cost_usd": result.get("cost_usd", 0.0),
-                "latency_sec": result.get("latency_sec"),
-            })
+        try:
+            result = scorer(ticker, cutoff)
+            if "error" in result:
+                return None
+            score_value = result.get(score_key)
+            if score_value is None:
+                return None
+            prices = fetch_cached(ticker)["prices"]
+            alpha = forward_alpha(prices, spy_prices, cutoff, horizon_days)
+            if alpha is None:
+                return None
+        except Exception:
+            return None
+        return {
+            "ticker": ticker,
+            "cutoff": cutoff_str,
+            "sector": result.get("sector"),
+            "score": score_value,
+            "raw_score": _raw_score_of(result),
+            "confidence": result.get("confidence"),
+            "actual_alpha": round(alpha, 4),
+            "true_bucket": outcome_bucket(alpha),
+            "tokens": result.get("tokens", 0),
+            "cost_usd": result.get("cost_usd", 0.0),
+            "latency_sec": result.get("latency_sec"),
+        }
+
+    jobs = [(cutoff_str, ticker) for cutoff_str in cutoffs for ticker in tickers]
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        predictions = [p for p in pool.map(run_one, jobs) if p is not None]
 
     return {"label": label, "universe": tickers, "cutoffs": cutoffs,
             "summary": _summarise(predictions, horizon_days), "predictions": predictions}
@@ -393,8 +417,9 @@ def compare(tickers: list[str] | None = None, cutoffs: list[str] | None = None,
     from phase2 import score_ticker_v2  # local import: avoids requiring Bedrock for Phase 1 runs
 
     phase1 = run_backtest(tickers, cutoffs, horizon_days, scorer=score_ticker, score_key="score", label="phase1")
+    # Gentler concurrency for the Nova leg to stay under Bedrock rate limits.
     phase2 = run_backtest(tickers, cutoffs, horizon_days, scorer=score_ticker_v2,
-                          score_key="final_score", label="phase2")
+                          score_key="final_score", label="phase2", max_workers=4)
     return {"phase1": phase1["summary"], "phase2": phase2["summary"],
             "phase1_cost": phase1["summary"].get("cost"), "phase2_cost": phase2["summary"].get("cost")}
 
