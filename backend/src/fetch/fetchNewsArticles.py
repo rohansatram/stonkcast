@@ -1,84 +1,80 @@
-import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
+import requests
+from datetime import datetime, timezone, timedelta
 import time
-from curl_cffi import requests
 
 CUTOFF = datetime(2026, 1, 1, tzinfo=timezone.utc)
-YAHOO_RSS_URL = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
-MAX_ARTICLES = 20
-REQUEST_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
+NEWS_LOOKBACK_DAYS = 90  # fetch the 90 days leading up to the cutoff
+GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+MAX_ARTICLES = 25
+GDELT_RATE_LIMIT_SECONDS = 5  # GDELT enforces 1 request per 5 seconds
 
 
-def fetch_news_articles(ticker: str) -> dict:
-    url = YAHOO_RSS_URL.format(ticker=ticker.upper())
-    response = _fetch_with_retry(url)
-    articles = _parse_rss(response.text)
-    articles_before_cutoff = [a for a in articles if a["published_at"] < CUTOFF][:MAX_ARTICLES]
+def fetch_news_articles(ticker: str, company_name: str | None = None) -> dict:
+    """
+    Fetches news articles about a ticker from GDELT for the 90 days before the cutoff.
+    company_name is optional but improves results - pass it from fetchStockData's info dict.
+    """
+    start_date = CUTOFF - timedelta(days=NEWS_LOOKBACK_DAYS)
+    query = f"{company_name} {ticker}" if company_name else ticker
+
+    params = {
+        "query": query,
+        "mode": "artlist",
+        "maxrecords": MAX_ARTICLES,
+        "startdatetime": start_date.strftime("%Y%m%d%H%M%S"),
+        "enddatetime": CUTOFF.strftime("%Y%m%d%H%M%S"),
+        "format": "json",
+        "sort": "DateDesc",
+    }
+
+    time.sleep(GDELT_RATE_LIMIT_SECONDS)
+    response = requests.get(GDELT_URL, params=params, timeout=20)
+
+    if response.status_code == 429:
+        print("Warning: GDELT rate limit hit - returning empty news. Try again in a few minutes.")
+        return {"ticker": ticker.upper(), "articles": []}
+
+    response.raise_for_status()
+    raw_articles = response.json().get("articles") or []
+    articles = [_parse_article(raw) for raw in raw_articles]
+    articles = [a for a in articles if a is not None]
 
     return {
         "ticker": ticker.upper(),
-        "articles": articles_before_cutoff,
+        "articles": articles,
     }
 
 
-def _fetch_with_retry(url: str, max_attempts: int = 3) -> requests.Response:
-    last_response = None
-    for attempt in range(max_attempts):
-        response = requests.get(url, headers=REQUEST_HEADERS, timeout=10, impersonate="chrome")
-        if response.status_code != 429:
-            response.raise_for_status()
-            return response
-        last_response = response
-        time.sleep(2 ** attempt)
+def _parse_article(raw: dict) -> dict | None:
+    seen_date_str = raw.get("seendate", "")
+    if not seen_date_str:
+        return None
 
-    last_response.raise_for_status()
-    raise RuntimeError(f"Failed after {max_attempts} attempts: {url}")
+    try:
+        # GDELT seendate format: "20251218T071500Z"
+        published_at = datetime.strptime(seen_date_str, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
-
-def _parse_rss(rss_xml: str) -> list[dict]:
-    root = ET.fromstring(rss_xml)
-    channel = root.find("channel")
-    if channel is None:
-        return []
-
-    articles = []
-    for item in channel.findall("item"):
-        title = item.findtext("title", default="").strip()
-        description = item.findtext("description", default="").strip()
-        link = item.findtext("link", default="").strip()
-        pub_date_str = item.findtext("pubDate", default="")
-
-        if not pub_date_str:
-            continue
-
-        try:
-            published_at = parsedate_to_datetime(pub_date_str).astimezone(timezone.utc)
-        except Exception:
-            continue
-
-        articles.append({
-            "title": title,
-            "description": description,
-            "link": link,
-            "published_at": published_at,
-        })
-
-    return articles
+    return {
+        "title": raw.get("title", "").strip(),
+        "url": raw.get("url", "").strip(),
+        "domain": raw.get("domain", "").strip(),
+        "language": raw.get("language", "").strip(),
+        "published_at": published_at,
+    }
 
 
 if __name__ == "__main__":
     import sys
 
     ticker = sys.argv[1] if len(sys.argv) > 1 else "AAPL"
-    print(f"Fetching news for {ticker} (cutoff: {CUTOFF.date()})...")
-    data = fetch_news_articles(ticker)
+    company_name = sys.argv[2] if len(sys.argv) > 2 else None
 
-    print(f"\nFound {len(data['articles'])} articles before cutoff\n")
+    print(f"Fetching GDELT news for {ticker} (cutoff: {CUTOFF.date()}, lookback: {NEWS_LOOKBACK_DAYS} days)...")
+    print("Waiting for GDELT rate limit...")
+    data = fetch_news_articles(ticker, company_name)
+
+    print(f"\nFound {len(data['articles'])} articles\n")
     for article in data["articles"]:
-        print(f"[{article['published_at'].strftime('%Y-%m-%d')}] {article['title']}")
-        if article["description"]:
-            print(f"  {article['description'][:120]}...")
-        print()
+        print(f"[{article['published_at'].strftime('%Y-%m-%d')}] {article['domain']}: {article['title']}")

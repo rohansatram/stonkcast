@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>stonkcast</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="masthead">
+    <h1>stonkcast</h1>
+    <p>Math + Amazon Nova stock risk radar. Scored relative to the S&amp;P 500.</p>
+  </header>
+
+  <main>
+    <nav class="tabs">
+      <button class="tab active" data-tab="demo">Demo (backtest)</button>
+      <button class="tab" data-tab="live">Live (real deal)</button>
+    </nav>
+
+    <!-- DEMO -->
+    <section class="panel active" id="panel-demo">
+      <p class="panel-note">
+        Rewind the clock: the agent predicts using <strong>only data available on or before the cutoff</strong>,
+        then we grade it against what actually happened.
+      </p>
+      <form class="controls" id="form-demo">
+        <label>Ticker <input type="text" id="demo-ticker" placeholder="e.g. AAPL" autocomplete="off" required></label>
+        <label>Cutoff (knowledge date) <input type="date" id="demo-start" value="2026-01-01" required></label>
+        <label>Evaluate until <input type="date" id="demo-end" value="2026-06-01" required></label>
+        <button type="submit" class="run">Run demo</button>
+      </form>
+    </section>
+
+    <!-- LIVE -->
+    <section class="panel" id="panel-live">
+      <p class="panel-note">
+        The real deal: scores <strong>today</strong> using all current data. No outcome yet, the future hasn't happened.
+      </p>
+      <form class="controls" id="form-live">
+        <label>Ticker <input type="text" id="live-ticker" placeholder="e.g. NVDA" autocomplete="off" required></label>
+        <button type="submit" class="run">Run live</button>
+      </form>
+    </section>
+
+    <!-- PROGRESS -->
+    <section class="status" id="status" hidden>
+      <div class="spinner"></div>
+      <span id="status-text">Starting...</span>
+    </section>
+
+    <!-- ERROR -->
+    <section class="error" id="error" hidden></section>
+
+    <!-- RESULT -->
+    <section class="result" id="result" hidden>
+      <div class="result-head">
+        <div class="score-badge" id="score-badge"><span id="score-num">3</span><small id="score-label">Hold</small></div>
+        <div class="result-meta">
+          <h2 id="result-title">Ticker</h2>
+          <p id="result-sub" class="muted"></p>
+          <div class="chips" id="result-chips"></div>
+        </div>
+      </div>
+
+      <div class="block">
+        <h3>Why</h3>
+        <p id="rationale"></p>
+        <div class="flags" id="risk-flags"></div>
+      </div>
+
+      <!-- DEMO outcome / accuracy -->
+      <div class="block outcome" id="outcome" hidden>
+        <h3>Did it call it? <span class="muted small">graded with real prices after the cutoff</span></h3>
+        <div class="outcome-grid">
+          <div><span class="k">Predicted</span><span class="v" id="o-pred"></span></div>
+          <div><span class="k">Stock return</span><span class="v" id="o-stock"></span></div>
+          <div><span class="k">S&amp;P return</span><span class="v" id="o-market"></span></div>
+          <div><span class="k">Alpha (vs market)</span><span class="v" id="o-alpha"></span></div>
+          <div class="verdict-cell"><span class="k">Verdict</span><span class="verdict" id="o-verdict"></span></div>
+        </div>
+      </div>
+
+      <footer class="meter" id="meter">
+        <span class="meter-item"><strong id="m-tokens">0</strong> tokens <span class="muted small" id="m-tokens-detail"></span></span>
+        <span class="meter-item">$<strong id="m-cost">0</strong> cost</span>
+        <span class="meter-item"><strong id="m-latency">0</strong>s latency</span>
+        <span class="meter-item muted small" id="m-model"></span>
+      </footer>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
