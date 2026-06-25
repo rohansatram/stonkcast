@@ -64,8 +64,18 @@ def _run_job(job_id: str, request: ScoreRequest) -> None:
         else:
             cutoff = datetime.fromisoformat(request.start_date).replace(tzinfo=UTC)
 
+        # Stream the bull/bear debate into the job state as tokens arrive, so the
+        # frontend's status poll can render the arguments growing live.
+        job["debate"] = {"bull": "", "bear": ""}
+
+        def on_token(agent: str, chunk: str) -> None:
+            if agent in job["debate"]:
+                job["debate"][agent] += chunk
+
         result = score_ticker_v2(
-            request.ticker, cutoff, on_stage=lambda message: job.update(stage=message)
+            request.ticker, cutoff,
+            on_stage=lambda message: job.update(stage=message),
+            on_token=on_token,
         )
         if "error" in result:
             job.update(status="error", error=result["error"])
@@ -120,7 +130,8 @@ def _return(prices, start: datetime, end: datetime) -> float | None:
 @app.post("/api/score")
 def start_score(request: ScoreRequest) -> dict:
     job_id = uuid.uuid4().hex
-    _jobs[job_id] = {"status": "running", "stage": "Starting...", "result": None, "error": None}
+    _jobs[job_id] = {"status": "running", "stage": "Starting...", "result": None, "error": None,
+                     "debate": {"bull": "", "bear": ""}}
     threading.Thread(target=_run_job, args=(job_id, request), daemon=True).start()
     return {"job_id": job_id}
 

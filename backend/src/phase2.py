@@ -22,7 +22,7 @@ from datetime import datetime
 
 from phase1 import score_ticker, DEFAULT_CUTOFF
 from fetch.fetchSECFilings import fetch_filing
-from nova import converse, DEFAULT_MODEL
+from nova import converse, converse_stream, DEFAULT_MODEL
 
 SYSTEM_PROMPT = (
     "You are a disciplined equity risk analyst. You are given (1) a quantitative "
@@ -67,11 +67,9 @@ def _section_line(label: str, text: str, quality: str) -> list[str]:
     return ["", f"--- {label} ---", "(not reliably available in this filing)"]
 
 
-def build_user_prompt(phase1_result: dict, filing: dict, anonymize: bool = False) -> str:
-    """Compose the user message: the quant breakdown + the filing excerpt.
-
-    `anonymize` withholds the ticker/name (used by the backtest leakage probe, so a
-    past cutoff can't be answered from the model's memory of a famous name's outcome)."""
+def _quant_block(phase1_result: dict, anonymize: bool = False) -> list[str]:
+    """Ticker context + the quant score + per-metric breakdown (shared by every prompt).
+    `anonymize` withholds the ticker/name (backtest leakage probe)."""
     ticker_line = (
         "TICKER: (withheld for blind evaluation)" if anonymize
         else f"TICKER: {phase1_result['ticker']} ({phase1_result.get('name')})"
@@ -90,38 +88,131 @@ def build_user_prompt(phase1_result: dict, filing: dict, anonymize: bool = False
         signal = "n/a" if entry["signal"] is None else f"{entry['signal']:+.2f}"
         raw = "n/a" if entry["raw"] is None else f"{entry['raw']:.3f}"
         lines.append(f"  - {entry['metric']}: signal={signal}, raw={raw}, weight={entry['weight']}")
+    return lines
 
+
+def _filing_section(filing: dict, which: str) -> list[str]:
+    """Render one filing section ('mdna' or 'risk') with its quality label."""
+    filing_block = filing.get("filing")
+    if not filing_block:
+        return ["", "SEC FILING: none available before cutoff."]
+    key, label = {
+        "mdna": ("mdna_excerpt", "MD&A excerpt (results & outlook)"),
+        "risk": ("risk_excerpt", "Risk Factors excerpt"),
+    }[which]
+    quality = filing_block.get(f"{which}_quality", "section" if filing_block.get(key) else "empty")
+    header = [f"SEC FILING: {filing_block['type']} filed {filing_block['filed_date']}"]
+    return header + _section_line(label, filing_block.get(key), quality)
+
+
+def _congress_block(phase1_result: dict, anonymize: bool = False) -> list[str]:
+    """Rich congress context (also reflected in the quant 'congress' signal).
+    Withheld under anonymize: member names hint at identity."""
+    congress = phase1_result.get("congress")
+    if not congress or not congress.get("available") or anonymize:
+        return []
+    if congress.get("signal") == "none":
+        return ["", f"CONGRESSIONAL TRADES: none disclosed in the {congress.get('window_days')}d before cutoff."]
+    lines = ["", f"CONGRESSIONAL TRADES (disclosed in the {congress.get('window_days')}d before cutoff; "
+                 f"also in the quant 'congress' signal): {congress.get('purchases')} buys, "
+                 f"{congress.get('sales')} sales by {congress.get('n_members')} member(s) "
+                 f"-> {congress.get('signal')}"]
+    for trade in (congress.get("recent") or [])[:5]:
+        amount = f"~${trade['amount_usd_est']:,}" if trade.get("amount_usd_est") else "n/a"
+        lines.append(f"  - {trade.get('member')}: {trade.get('side')} {amount} (disclosed {trade.get('disclosed')})")
+    return lines
+
+
+def build_user_prompt(phase1_result: dict, filing: dict, anonymize: bool = False) -> str:
+    """Single-call prompt: quant breakdown + both filing sections + congress."""
+    lines = _quant_block(phase1_result, anonymize)
     filing_block = filing.get("filing")
     if filing_block:
-        lines.append("")
-        lines.append(f"SEC FILING: {filing_block['type']} filed {filing_block['filed_date']}")
-        mdna_quality = filing_block.get("mdna_quality", "section" if filing_block.get("mdna_excerpt") else "empty")
-        risk_quality = filing_block.get("risk_quality", "section" if filing_block.get("risk_excerpt") else "empty")
-        lines += _section_line("MD&A excerpt (results & outlook)", filing_block.get("mdna_excerpt"), mdna_quality)
-        lines += _section_line("Risk Factors excerpt", filing_block.get("risk_excerpt"), risk_quality)
-        if mdna_quality != "section" and risk_quality != "section":
+        lines += _filing_section(filing, "mdna") + _filing_section(filing, "risk")[1:]  # drop dup SEC FILING header
+        mdna_q = filing_block.get("mdna_quality", "section" if filing_block.get("mdna_excerpt") else "empty")
+        risk_q = filing_block.get("risk_quality", "section" if filing_block.get("risk_excerpt") else "empty")
+        if mdna_q != "section" and risk_q != "section":
             lines += ["", "NOTE: no filing section was reliably extracted. Do NOT invent qualitative "
                           "views; lean toward CONFIRMING the quantitative score."]
     else:
         lines += ["", "SEC FILING: none available before cutoff."]
-
-    # Congressional trades: rich qualitative context for Nova (the same signal is also
-    # in the quant breakdown). Withheld under anonymize: member names hint at identity.
-    congress = phase1_result.get("congress")
-    if congress and congress.get("available") and not anonymize:
-        if congress.get("signal") == "none":
-            lines += ["", f"CONGRESSIONAL TRADES: none disclosed in the {congress.get('window_days')}d before cutoff."]
-        else:
-            lines += ["", f"CONGRESSIONAL TRADES (disclosed in the {congress.get('window_days')}d before cutoff; "
-                          f"also in the quant 'congress' signal): {congress.get('purchases')} buys, "
-                          f"{congress.get('sales')} sales by {congress.get('n_members')} member(s) "
-                          f"-> {congress.get('signal')}"]
-            for trade in (congress.get("recent") or [])[:5]:
-                amount = f"~${trade['amount_usd_est']:,}" if trade.get("amount_usd_est") else "n/a"
-                lines.append(f"  - {trade.get('member')}: {trade.get('side')} {amount} (disclosed {trade.get('disclosed')})")
-
+    lines += _congress_block(phase1_result, anonymize)
     lines += ["", "Return the JSON object now."]
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Multi-agent panel: a bull and a bear argue, then a judge decides.
+# --------------------------------------------------------------------------- #
+
+BULL_SYSTEM = (
+    "You are a bullish equity analyst. Argue the BULL case for this stock BEATING the "
+    "S&P 500 over the next ~6 months, using ONLY the provided quant signals, the MD&A "
+    "excerpt, and any congressional buying. Cite specifics (named results, guidance, "
+    "momentum). Do NOT use any knowledge of events after the cutoff date. Be concrete, "
+    "3-5 sentences. End with a line exactly: 'BULL SCORE: N' where N is 1-5 (how strong "
+    "the bull case is)."
+)
+
+BEAR_SYSTEM = (
+    "You are a skeptical, bearish equity analyst. Argue the BEAR case for this stock "
+    "LAGGING the S&P 500 over the next ~6 months, using ONLY the provided quant signals, "
+    "the Risk Factors excerpt, and any congressional selling. Cite specifics. Do NOT use "
+    "any knowledge of events after the cutoff date. Be concrete, 3-5 sentences. End with a "
+    "line exactly: 'BEAR SCORE: N' where N is 1-5 (how strong the bear case is)."
+)
+
+JUDGE_SYSTEM = (
+    "You are the head of an investment committee. You are given a quantitative 1-5 score "
+    "with its breakdown, a BULL argument, a BEAR argument, and optional congressional-trade "
+    "context. Weigh them and decide a FINAL 1-5 score (1=strong sell, 3=hold, 5=strong buy) "
+    "RELATIVE to the S&P 500 over ~6 months.\n\n"
+    "Hard rules:\n"
+    "- Use ONLY the information provided; no knowledge of events after the cutoff date.\n"
+    "- BE DECISIVE: when one side is clearly stronger, commit to a Buy/Sell (4/2) or Strong "
+    "(5/1). Reserve Hold (3) for genuinely balanced cases.\n"
+    "- risk_flags must be SPECIFIC to THIS company (named product, customer, geography, "
+    "regulation, dependency), not generic ('competition', 'supply chain', 'macro').\n"
+    "- Respond with ONLY a JSON object, no prose before or after, in exactly this shape:\n"
+    '{"final_score": <1-5 int>, "risk_flags": [<specific short strings>], '
+    '"rationale": "<2-4 sentences explaining which side won and why>"}'
+)
+
+
+def build_bull_prompt(phase1_result: dict, filing: dict, anonymize: bool = False) -> str:
+    lines = _quant_block(phase1_result, anonymize)
+    lines += _filing_section(filing, "mdna")
+    lines += _congress_block(phase1_result, anonymize)
+    lines += ["", "Make the BULL case now. End with 'BULL SCORE: N'."]
+    return "\n".join(lines)
+
+
+def build_bear_prompt(phase1_result: dict, filing: dict, anonymize: bool = False) -> str:
+    lines = _quant_block(phase1_result, anonymize)
+    lines += _filing_section(filing, "risk")
+    lines += _congress_block(phase1_result, anonymize)
+    lines += ["", "Make the BEAR case now. End with 'BEAR SCORE: N'."]
+    return "\n".join(lines)
+
+
+def build_judge_prompt(phase1_result: dict, bull_case: str, bear_case: str, anonymize: bool = False) -> str:
+    lines = _quant_block(phase1_result, anonymize)
+    lines += ["", "--- BULL ARGUMENT ---", bull_case, "", "--- BEAR ARGUMENT ---", bear_case]
+    lines += _congress_block(phase1_result, anonymize)
+    lines += ["", "Return the JSON object now."]
+    return "\n".join(lines)
+
+
+def _combine_usage(usages: list[dict]) -> dict:
+    """Sum token usage + cost across the panel's calls (model assumed identical)."""
+    return {
+        "input_tokens": sum(u["input_tokens"] for u in usages),
+        "output_tokens": sum(u["output_tokens"] for u in usages),
+        "total_tokens": sum(u["total_tokens"] for u in usages),
+        "cost_usd": round(sum(u["cost_usd"] for u in usages), 6),
+        "model": usages[0]["model"] if usages else None,
+        "calls": len(usages),
+    }
 
 
 def _parse_nova_json(reply_text: str, fallback_score: int) -> dict:
@@ -173,13 +264,16 @@ def _derive_confidence(final_score: int, quant_score: int, coverage: float) -> s
 
 def score_ticker_v2(ticker: str, cutoff: datetime = DEFAULT_CUTOFF,
                     model_id: str = DEFAULT_MODEL, refresh: bool = False, on_stage=None,
-                    anonymize: bool = False) -> dict:
+                    anonymize: bool = False, panel: bool = True, on_token=None) -> dict:
     """
     Phase 1 score + Nova reasoning over the point-in-time filing.
 
-    on_stage(message) is an optional callback invoked at each step, so a UI can
-    poll progress ("Computing quant score...", "Reasoning with Nova...").
-    `anonymize` withholds the ticker/name from Nova (backtest leakage probe).
+    panel=True (default): a bull and a bear analyst argue (in parallel), then a judge
+    decides the final score (3 Nova calls). panel=False: a single analyst call.
+
+    on_stage(message) reports progress; on_token(agent, chunk) streams the bull/bear
+    arguments token-by-token (agent is "bull" or "bear") for live UI rendering.
+    `anonymize` withholds the ticker/name from Nova (backtest probe).
     """
     started = time.time()
 
@@ -199,9 +293,31 @@ def score_ticker_v2(ticker: str, cutoff: datetime = DEFAULT_CUTOFF,
         return phase1_result
     filing_block = filing.get("filing") or {}
 
-    emit("Reasoning with Amazon Nova...")
-    user_prompt = build_user_prompt(phase1_result, filing, anonymize=anonymize)
-    reply_text, usage = converse(user_prompt, system=SYSTEM_PROMPT, model_id=model_id)
+    bull_case = bear_case = None
+    if panel:
+        # Bull and bear argue independently (run concurrently, streamed), then the judge decides.
+        emit("Bull and bear analysts arguing...")
+
+        def stream_agent(prompt, system_prompt, tag):
+            token_cb = (lambda chunk: on_token(tag, chunk)) if on_token else None
+            return converse_stream(prompt, system=system_prompt, model_id=model_id, on_token=token_cb)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            bull_future = pool.submit(stream_agent, build_bull_prompt(phase1_result, filing, anonymize),
+                                      BULL_SYSTEM, "bull")
+            bear_future = pool.submit(stream_agent, build_bear_prompt(phase1_result, filing, anonymize),
+                                      BEAR_SYSTEM, "bear")
+            bull_case, bull_usage = bull_future.result()
+            bear_case, bear_usage = bear_future.result()
+        emit("Judge weighing the arguments...")
+        judge_prompt = build_judge_prompt(phase1_result, bull_case, bear_case, anonymize)
+        reply_text, judge_usage = converse(judge_prompt, system=JUDGE_SYSTEM, model_id=model_id)
+        usage = _combine_usage([bull_usage, bear_usage, judge_usage])
+    else:
+        emit("Reasoning with Amazon Nova...")
+        user_prompt = build_user_prompt(phase1_result, filing, anonymize=anonymize)
+        reply_text, usage = converse(user_prompt, system=SYSTEM_PROMPT, model_id=model_id)
+
     nova_result = _parse_nova_json(reply_text, fallback_score=phase1_result["score"])
 
     quant_score = phase1_result["score"]
@@ -230,6 +346,9 @@ def score_ticker_v2(ticker: str, cutoff: datetime = DEFAULT_CUTOFF,
         "confidence": confidence,
         "parse_error": parse_error,
         "anonymized": anonymize,
+        "mode": "panel" if panel else "single",
+        "bull_case": bull_case,
+        "bear_case": bear_case,
         "risk_flags": nova_result.get("risk_flags", []),
         "rationale": nova_result.get("rationale"),
         "filing_used": filing_block.get("type"),
@@ -259,9 +378,13 @@ if __name__ == "__main__":
     print(f"\n{'='*60}")
     print(f" {result['name']} ({result['ticker']})  |  {result['sector']}  |  cutoff {result['cutoff']}")
     print(f"{'='*60}")
+    if result.get("bull_case"):
+        print(f" BULL:\n   {result['bull_case'].strip()}")
+        print(f"\n BEAR:\n   {result['bear_case'].strip()}")
+        print(f"{'-'*60}")
     print(f" FINAL: {result['final_score']}/5  {result['final_label']}   "
-          f"(quant was {result['quant_score']}, Nova chose to {result['adjustment']})")
-    print(f" Confidence: {result['confidence']}  |  filing: {result['filing_used']}")
+          f"(quant was {result['quant_score']}, judge chose to {result['adjustment']})")
+    print(f" Confidence: {result['confidence']}  |  filing: {result['filing_used']}  |  mode: {result['mode']}")
     print(f" Risk flags: {', '.join(result['risk_flags']) or 'none'}")
     print(f"\n Rationale: {result['rationale']}")
     print(f"{'-'*60}")

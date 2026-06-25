@@ -1,34 +1,9 @@
 "use strict";
 
-const POLL_INTERVAL_MS = 700;
+const POLL_INTERVAL_MS = 400;  // tight enough that the streamed debate reads as live
 const SCORE_LABELS = { 1: "Strong Sell", 2: "Sell", 3: "Hold", 4: "Buy", 5: "Strong Buy" };
 
-// Meme loading messages (cycled while a run is in flight).
-const MEME_LOADING = [
-  "consulting the stonks man… 📈",
-  "asking Congress what they bought… 🏛️",
-  "reading SEC filings so you don't have to… 📄",
-  "summoning Amazon Nova… 🔮",
-  "doing finance… 💸",
-  "trust me bro modeling… 🧠",
-  "stonks? or not stonks?",
-];
-let memeTimer = null;
-
 const el = (id) => document.getElementById(id);
-
-function startMemeLoader() {
-  let i = 0;
-  el("status-text").textContent = MEME_LOADING[0];
-  memeTimer = setInterval(() => {
-    i = (i + 1) % MEME_LOADING.length;
-    el("status-text").textContent = MEME_LOADING[i];
-  }, 1300);
-}
-
-function stopMemeLoader() {
-  if (memeTimer) { clearInterval(memeTimer); memeTimer = null; }
-}
 
 let activePoll = null;  // so switching tabs cancels an in-flight poll
 
@@ -45,11 +20,18 @@ document.querySelectorAll(".tab").forEach((tab) => {
 
 function resetView() {
   if (activePoll) { clearInterval(activePoll); activePoll = null; }
-  stopMemeLoader();
-  ["status", "error", "result"].forEach((id) => { el(id).hidden = true; });
+  ["status", "error", "result", "debate"].forEach((id) => { el(id).hidden = true; });
   el("status-text").textContent = "";
+  clearDebate();
   ["demo-ticker", "live-ticker"].forEach((id) => { el(id).value = ""; });
   document.body.classList.remove("working");  // back to the centered landing layout
+}
+
+function clearDebate() {
+  ["bull-text", "bear-text"].forEach((id) => {
+    el(id).textContent = "";
+    el(id).classList.remove("streaming");
+  });
 }
 
 // --- Forms ---
@@ -73,7 +55,8 @@ async function run(request) {
   if (!request.ticker) return;  // don't start a run without a ticker
 
   showOnly("status");
-  startMemeLoader();
+  el("status-text").textContent = "Starting…";
+  clearDebate();
 
   let jobId;
   try {
@@ -101,17 +84,32 @@ function poll(jobId) {
     }
 
     if (job.status === "running") {
-      // meme loader owns the status text while running
+      el("status-text").textContent = job.stage || "Working…";
+      renderDebate(job.debate, true);  // stream the bull/bear arguments as they arrive
     } else if (job.status === "done") {
       clearInterval(activePoll);
-      stopMemeLoader();
       renderResult(job.result);
     } else {
       clearInterval(activePoll);
-      stopMemeLoader();
       showError(job.error || "Something went wrong.");
     }
   }, POLL_INTERVAL_MS);
+}
+
+function renderDebate(debate, streaming) {
+  if (!debate) return;
+  const bull = debate.bull || "";
+  const bear = debate.bear || "";
+  if (!bull && !bear) return;  // nothing streamed yet
+  el("debate").hidden = false;
+  setDebateText("bull-text", bull, streaming);
+  setDebateText("bear-text", bear, streaming);
+}
+
+function setDebateText(id, text, streaming) {
+  const node = el(id);
+  node.textContent = text;
+  node.classList.toggle("streaming", !!streaming && !!text);  // blinking cursor while live
 }
 
 // --- Rendering ---
@@ -125,10 +123,12 @@ function renderResult(result) {
   el("result-title").textContent = `${result.name || result.ticker} (${result.ticker})`;
   el("result-sub").textContent = `${result.sector || ""} · cutoff ${result.cutoff}`;
 
+  const who = result.mode === "panel" ? "judge" : "Nova";
   const adjustText = {
-    raise: `Nova raised it from ${result.quant_score}`,
-    lower: `Nova lowered it from ${result.quant_score}`,
-    confirm: `Nova confirmed the quant score`,
+    raise: `${who} raised it from ${result.quant_score}`,
+    lower: `${who} lowered it from ${result.quant_score}`,
+    confirm: `${who} confirmed the quant score`,
+    unavailable: `LLM unavailable; showing quant score`,
   }[result.adjustment];
   el("result-chips").innerHTML = chip(adjustText) + chip("confidence: " + result.confidence);
 
@@ -136,6 +136,13 @@ function renderResult(result) {
   el("risk-flags").innerHTML = (result.risk_flags || [])
     .map((flag) => `<span class="flag">${escapeHtml(flag)}</span>`)
     .join("");
+
+  // Finalise the debate (full text, no streaming cursor); hide it for single mode.
+  if (result.bull_case || result.bear_case) {
+    renderDebate({ bull: result.bull_case, bear: result.bear_case }, false);
+  } else {
+    el("debate").hidden = true;
+  }
 
   renderOutcome(result.outcome);
   renderCongress(result.congress);
@@ -222,5 +229,6 @@ function showOnly(sectionId) {
 
 function showError(message) {
   el("error").textContent = message;
+  el("debate").hidden = true;
   showOnly("error");
 }

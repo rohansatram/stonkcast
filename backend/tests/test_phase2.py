@@ -1,6 +1,10 @@
 """Phase 2 prompt building and response parsing (offline, no Nova calls)."""
+import pytest
 
-from phase2 import build_user_prompt, _parse_nova_json, _clamp_score, _derive_adjustment, _derive_confidence
+from phase2 import (
+    build_user_prompt, _parse_nova_json, _clamp_score, _derive_adjustment, _derive_confidence,
+    build_bull_prompt, build_bear_prompt, build_judge_prompt, _combine_usage,
+)
 
 
 def _phase1_result():
@@ -129,3 +133,37 @@ def test_confidence_is_derived_from_agreement_and_coverage():
     assert _derive_confidence(5, 2, coverage=1.0) == "low"     # strong disagreement
     assert _derive_confidence(3, 3, coverage=0.5) == "low"     # thin data
     assert _derive_confidence(3, 2, coverage=1.0) == "medium"  # mild adjustment
+
+
+# --- multi-agent panel (bull / bear / judge) ---
+
+def test_bull_prompt_uses_mdna_and_quant():
+    prompt = build_bull_prompt(_phase1_result(), _filing())
+    assert "Revenue grew 24%" in prompt        # MD&A (bull evidence)
+    assert "momentum_vs_spy" in prompt          # quant breakdown
+    assert "BULL SCORE" in prompt
+    assert "Supply chain concentration" not in prompt  # bear gets Risk Factors, not bull
+
+
+def test_bear_prompt_uses_risk_and_quant():
+    prompt = build_bear_prompt(_phase1_result(), _filing())
+    assert "Supply chain concentration" in prompt   # Risk Factors (bear evidence)
+    assert "momentum_vs_spy" in prompt
+    assert "BEAR SCORE" in prompt
+    assert "Revenue grew 24%" not in prompt          # bull gets MD&A, not bear
+
+
+def test_judge_prompt_includes_both_arguments():
+    prompt = build_judge_prompt(_phase1_result(), "BULL: strong demand. BULL SCORE: 4",
+                                "BEAR: regulatory risk. BEAR SCORE: 2")
+    assert "BULL ARGUMENT" in prompt and "BEAR ARGUMENT" in prompt
+    assert "strong demand" in prompt and "regulatory risk" in prompt
+
+
+def test_combine_usage_sums_calls():
+    u = lambda i, o, c: {"input_tokens": i, "output_tokens": o, "total_tokens": i + o, "cost_usd": c, "model": "m"}
+    combined = _combine_usage([u(100, 10, 0.001), u(120, 12, 0.0012), u(80, 8, 0.0008)])
+    assert combined["input_tokens"] == 300
+    assert combined["total_tokens"] == 330
+    assert combined["calls"] == 3
+    assert combined["cost_usd"] == pytest.approx(0.003)

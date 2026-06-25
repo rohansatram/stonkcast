@@ -101,6 +101,24 @@ body.working main { padding-top: 24px; }
   background: #ffe8df; color: var(--tangerine); border: 1px solid #ffc4ac; font-weight: 600;
 }
 
+/* Debate (bull vs bear, streams live) */
+.debate { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 20px; }
+.debate-col {
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 16px 18px; border-top: 4px solid var(--line);
+}
+.debate-col.bull-col { border-top-color: var(--baltic); }
+.debate-col.bear-col { border-top-color: var(--tangerine); }
+.debate-col h3 { margin: 0 0 10px; font-size: 15px; }
+.debate-text { font-size: 14px; line-height: 1.55; color: var(--ink); white-space: pre-wrap; min-height: 1.5em; }
+/* blinking cursor while a side is still streaming */
+.debate-text.streaming::after {
+  content: "▋"; margin-left: 1px; color: var(--muted);
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink { to { visibility: hidden; } }
+@media (max-width: 560px) { .debate { grid-template-columns: 1fr; } }
+
 /* Result */
 .result { margin-top: 20px; background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
 .result-head { display: flex; gap: 18px; padding: 22px; align-items: center; border-bottom: 1px solid var(--line); }

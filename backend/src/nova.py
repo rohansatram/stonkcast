@@ -25,6 +25,7 @@ DEFAULT_MODEL = os.getenv("NOVA_MODEL", "eu.amazon.nova-lite-v1:0")
 
 # USD per token (Bedrock Nova list prices, input / output).
 PRICING = {
+    "nova-2-lite": (0.39e-6, 3.27e-6),  # $0.39 / $3.27 per 1M tokens (AWS list price)
     "nova-micro": (0.035e-6, 0.14e-6),
     "nova-lite": (0.06e-6, 0.24e-6),
     "nova-pro": (0.80e-6, 3.20e-6),
@@ -78,6 +79,47 @@ def converse(user_text: str, system: str | None = None, model_id: str = DEFAULT_
         "model": model_id,
     }
     return reply_text, usage
+
+
+def converse_stream(user_text: str, system: str | None = None, model_id: str = DEFAULT_MODEL,
+                    region: str = DEFAULT_REGION, max_tokens: int = 1200, temperature: float = 0.05,
+                    on_token=None) -> tuple[str, dict]:
+    """
+    Streaming Converse call. Invokes on_token(text_chunk) as tokens arrive (for
+    live UI streaming) and returns (full_text, usage) at the end, same usage shape
+    as converse(). Falls back gracefully if usage metadata is absent.
+    """
+    request = {
+        "modelId": model_id,
+        "messages": [{"role": "user", "content": [{"text": user_text}]}],
+        "inferenceConfig": {"maxTokens": max_tokens, "temperature": temperature},
+    }
+    if system:
+        request["system"] = [{"text": system}]
+
+    response = _client(region).converse_stream(**request)
+    parts: list[str] = []
+    input_tokens = output_tokens = 0
+    for event in response["stream"]:
+        if "contentBlockDelta" in event:
+            chunk = event["contentBlockDelta"]["delta"].get("text", "")
+            if chunk:
+                parts.append(chunk)
+                if on_token:
+                    on_token(chunk)
+        elif "metadata" in event:
+            usage_meta = event["metadata"].get("usage", {})
+            input_tokens = usage_meta.get("inputTokens", 0)
+            output_tokens = usage_meta.get("outputTokens", 0)
+
+    usage = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "cost_usd": estimate_cost(model_id, input_tokens, output_tokens),
+        "model": model_id,
+    }
+    return "".join(parts), usage
 
 
 if __name__ == "__main__":
