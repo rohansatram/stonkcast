@@ -44,6 +44,28 @@ def test_user_prompt_handles_missing_filing():
     assert "none available" in prompt
 
 
+def _congress(signal="net buying"):
+    return {"available": True, "signal": signal, "window_days": 90,
+            "purchases": 3, "sales": 0, "n_members": 2}
+
+
+def test_prompt_includes_congress_when_available():
+    prompt = build_user_prompt(_phase1_result(), _filing(), congress=_congress())
+    assert "CONGRESSIONAL TRADES" in prompt
+    assert "3 buys" in prompt
+
+
+def test_prompt_omits_congress_when_anonymized():
+    # member names could hint at a famous trade, so the leakage probe withholds it
+    prompt = build_user_prompt(_phase1_result(), _filing(), congress=_congress(), anonymize=True)
+    assert "CONGRESSIONAL TRADES" not in prompt
+
+
+def test_prompt_omits_congress_when_unavailable():
+    prompt = build_user_prompt(_phase1_result(), _filing(), congress={"available": False})
+    assert "CONGRESSIONAL TRADES" not in prompt
+
+
 def test_user_prompt_anonymize_withholds_identity():
     prompt = build_user_prompt(_phase1_result(), _filing(), anonymize=True)
     assert "AAPL" not in prompt

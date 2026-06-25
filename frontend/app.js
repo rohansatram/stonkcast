@@ -3,7 +3,32 @@
 const POLL_INTERVAL_MS = 700;
 const SCORE_LABELS = { 1: "Strong Sell", 2: "Sell", 3: "Hold", 4: "Buy", 5: "Strong Buy" };
 
+// Meme loading messages (cycled while a run is in flight).
+const MEME_LOADING = [
+  "consulting the stonks man… 📈",
+  "asking Congress what they bought… 🏛️",
+  "reading SEC filings so you don't have to… 📄",
+  "summoning Amazon Nova… 🔮",
+  "doing finance… 💸",
+  "trust me bro modeling… 🧠",
+  "stonks? or not stonks?",
+];
+let memeTimer = null;
+
 const el = (id) => document.getElementById(id);
+
+function startMemeLoader() {
+  let i = 0;
+  el("status-text").textContent = MEME_LOADING[0];
+  memeTimer = setInterval(() => {
+    i = (i + 1) % MEME_LOADING.length;
+    el("status-text").textContent = MEME_LOADING[i];
+  }, 1300);
+}
+
+function stopMemeLoader() {
+  if (memeTimer) { clearInterval(memeTimer); memeTimer = null; }
+}
 
 let activePoll = null;  // so switching tabs cancels an in-flight poll
 
@@ -20,6 +45,7 @@ document.querySelectorAll(".tab").forEach((tab) => {
 
 function resetView() {
   if (activePoll) { clearInterval(activePoll); activePoll = null; }
+  stopMemeLoader();
   ["status", "error", "result"].forEach((id) => { el(id).hidden = true; });
   el("status-text").textContent = "";
   ["demo-ticker", "live-ticker"].forEach((id) => { el(id).value = ""; });
@@ -46,7 +72,7 @@ async function run(request) {
   if (!request.ticker) return;  // don't start a run without a ticker
 
   showOnly("status");
-  el("status-text").textContent = "Submitting request...";
+  startMemeLoader();
 
   let jobId;
   try {
@@ -69,16 +95,19 @@ function poll(jobId) {
       job = await (await fetch("/api/status/" + jobId)).json();
     } catch (err) {
       clearInterval(activePoll);
+      stopMemeLoader();
       return showError("Lost connection to the backend.");
     }
 
     if (job.status === "running") {
-      el("status-text").textContent = job.stage || "Working...";
+      // meme loader owns the status text while running
     } else if (job.status === "done") {
       clearInterval(activePoll);
+      stopMemeLoader();
       renderResult(job.result);
     } else {
       clearInterval(activePoll);
+      stopMemeLoader();
       showError(job.error || "Something went wrong.");
     }
   }, POLL_INTERVAL_MS);
@@ -108,6 +137,7 @@ function renderResult(result) {
     .join("");
 
   renderOutcome(result.outcome);
+  renderCongress(result.congress);
 
   const usage = result.token_usage || {};
   el("m-tokens").textContent = result.tokens ?? 0;
@@ -118,6 +148,25 @@ function renderResult(result) {
   el("m-model").textContent = usage.model || "";
 
   showOnly("result");
+}
+
+function renderCongress(congress) {
+  const block = el("congress");
+  // Only show it when there's actually congressional activity to report.
+  if (!congress || !congress.available || congress.signal === "none"
+      || (congress.purchases === 0 && congress.sales === 0)) {
+    block.hidden = true;
+    return;
+  }
+  block.hidden = false;
+  el("congress-summary").textContent =
+    `${congress.signal} — ${congress.purchases} buys / ${congress.sales} sales disclosed before the cutoff`;
+  el("congress-recent").innerHTML = (congress.recent || [])
+    .map((trade) => {
+      const amount = trade.amount_usd_est ? ` ~$${Number(trade.amount_usd_est).toLocaleString()}` : "";
+      return `<span class="flag congress-${trade.side}">${escapeHtml(trade.member)} · ${trade.side}${amount}</span>`;
+    })
+    .join("");
 }
 
 function renderOutcome(outcome) {
@@ -138,11 +187,11 @@ function renderOutcome(outcome) {
   setReturn("o-alpha", outcome.alpha);
 
   if (outcome.hit === null) {
-    setVerdict("na", "Hold (no directional call)");
+    setVerdict("na", "sat it out 🤷");
   } else if (outcome.hit) {
-    setVerdict("hit", "HIT");
+    setVerdict("hit", "called it 😎");
   } else {
-    setVerdict("miss", "MISS");
+    setVerdict("miss", "tuff 💀 (not financial advice)");
   }
 }
 

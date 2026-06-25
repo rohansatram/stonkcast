@@ -126,6 +126,8 @@ main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
   font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 8px;
   background: #ffe8df; color: var(--tangerine);
 }
+.flag.congress-buy { background: #dceaf3; color: var(--baltic); }
+.flag.congress-sell { background: #ffe8df; color: var(--tangerine); }
 
 /* Outcome */
 .outcome-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 14px; margin-top: 6px; }

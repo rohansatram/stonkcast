@@ -9,7 +9,6 @@
 <body>
   <header class="masthead">
     <h1>stonkcast</h1>
-    <p>Math + Amazon Nova stock risk radar. Scored relative to the S&amp;P 500.</p>
   </header>
 
   <main>
@@ -67,6 +66,13 @@
         <h3>Why</h3>
         <p id="rationale"></p>
         <div class="flags" id="risk-flags"></div>
+      </div>
+
+      <!-- Congressional trades signal -->
+      <div class="block congress" id="congress" hidden>
+        <h3>Congress is trading this <span class="muted small">disclosed before the cutoff</span></h3>
+        <p id="congress-summary"></p>
+        <div class="flags" id="congress-recent"></div>
       </div>
 
       <!-- DEMO outcome / accuracy -->
