@@ -18,9 +18,10 @@ from baselines import METRIC_DIRECTION
 
 # Default weights (sum to 1.0). These are STARTING POINTS, not fitted values; the
 # horizon-aligned 6-month momentum carries the most, the reversal-prone 1-month
-# terms the least. Tune against the backtest (backtest.fit_thresholds calibrates
-# the buckets; weights are the next tuning target).
-WEIGHTS: dict[str, float] = {
+# terms the least. backtest.fit_weights can overwrite them with weights fitted from
+# per-signal information coefficients (persisted to cache/weights.json), the same
+# way fit_thresholds calibrates the buckets.
+DEFAULT_WEIGHTS: dict[str, float] = {
     "momentum_6m_vs_spy": 0.18,
     "momentum_vs_spy": 0.07,
     "momentum_30d": 0.05,
@@ -58,6 +59,34 @@ DEFAULT_BUCKET_THRESHOLDS = [
 ]  # below the last -> 1
 
 CALIBRATION_FILE = Path(__file__).resolve().parent.parent / "cache" / "calibration.json"
+WEIGHTS_FILE = Path(__file__).resolve().parent.parent / "cache" / "weights.json"
+
+
+def _load_weights() -> dict[str, float]:
+    """Fitted weights from cache/weights.json if present (keys validated against
+    METRIC_DIRECTION, renormalised to sum 1.0), else the hand-set defaults. A fitted
+    file may zero out signals the backtest found unpredictive."""
+    try:
+        with WEIGHTS_FILE.open() as weights_file:
+            loaded = json.load(weights_file).get("weights")
+        if loaded:
+            merged = {metric: float(loaded.get(metric, 0.0)) for metric in DEFAULT_WEIGHTS}
+            total = sum(merged.values())
+            if total > 0:
+                return {metric: weight / total for metric, weight in merged.items()}
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return dict(DEFAULT_WEIGHTS)
+
+
+WEIGHTS = _load_weights()
+
+
+def reload_weights() -> dict[str, float]:
+    """Re-read cache/weights.json into the module global (call after fitting)."""
+    global WEIGHTS
+    WEIGHTS = _load_weights()
+    return WEIGHTS
 
 
 def _load_bucket_thresholds() -> list[tuple[float, int]]:

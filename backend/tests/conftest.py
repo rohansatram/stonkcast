@@ -15,11 +15,12 @@ UTC = timezone.utc
 
 
 @pytest.fixture(autouse=True)
-def _default_bucket_thresholds():
-    """Isolate scoring tests from any fitted cache/calibration.json on disk: every
-    test starts from the hand-set default thresholds unless it sets its own."""
+def _default_scoring_params():
+    """Isolate scoring tests from any fitted cache/calibration.json or weights.json on
+    disk: every test starts from the hand-set defaults unless it sets its own."""
     import scoring
     scoring.BUCKET_THRESHOLDS = list(scoring.DEFAULT_BUCKET_THRESHOLDS)
+    scoring.WEIGHTS = dict(scoring.DEFAULT_WEIGHTS)
     yield
 
 

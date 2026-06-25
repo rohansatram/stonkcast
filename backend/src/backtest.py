@@ -85,6 +85,14 @@ def _raw_score_of(result: dict) -> float | None:
     return result.get("phase1", {}).get("raw_score")
 
 
+def _signals_of(result: dict) -> dict:
+    """Per-metric directional signal (z x direction) from the breakdown, the feature
+    vector weight-fitting operates on. breakdown is top-level (Phase 1) or nested
+    under 'phase1' (Phase 2)."""
+    breakdown = result.get("breakdown") or result.get("phase1", {}).get("breakdown") or []
+    return {entry["metric"]: entry.get("signal") for entry in breakdown}
+
+
 def warm_cache(tickers, max_workers: int = MAX_WARM_WORKERS) -> None:
     """Fetch each ticker's full history into the disk cache concurrently. Front-loads
     all network I/O once (bounded), so subsequent scoring is cache-fast. Used by the
@@ -133,6 +141,7 @@ def run_backtest(tickers: list[str] | None = None, cutoffs: list[str] | None = N
             "sector": result.get("sector"),
             "score": score_value,
             "raw_score": _raw_score_of(result),
+            "signals": _signals_of(result),  # per-metric signal vector, for weight fitting
             "confidence": result.get("confidence"),
             "actual_alpha": round(alpha, 4),
             "true_bucket": outcome_bucket(alpha),
@@ -406,6 +415,121 @@ def fit_and_evaluate(tickers: list[str] | None = None, fit_cutoffs: list[str] | 
         "fit_summary": fit_report["summary"],
         "held_out_summary": eval_report["summary"],
         "held_out_breakdowns": breakdowns(eval_report, horizon_days),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Weight fitting from per-signal information coefficients
+# --------------------------------------------------------------------------- #
+
+def signal_ic_table(predictions: list[dict]) -> dict:
+    """Per-signal predictive value: the within-cutoff rank-IC of each metric's signal
+    vs forward alpha, averaged across cutoffs. The signal already has direction baked
+    in, so a POSITIVE IC means the metric predicts alpha in the assumed direction;
+    a negative IC means the sign is backwards (e.g. the P/E value-trap)."""
+    table = {}
+    for metric in scoring.METRIC_DIRECTION:
+        by_cutoff: dict[str, list[tuple[float, float]]] = {}
+        for p in predictions:
+            signal = (p.get("signals") or {}).get(metric)
+            if signal is not None:
+                by_cutoff.setdefault(p.get("cutoff", "_"), []).append((signal, p["actual_alpha"]))
+        ics = []
+        for pairs in by_cutoff.values():
+            if len(pairs) < 3:
+                continue
+            ic = _pearson(_ranks([s for s, _ in pairs]), _ranks([a for _, a in pairs]))
+            if ic is not None:
+                ics.append(ic)
+        mean_ic = sum(ics) / len(ics) if ics else None
+        table[metric] = {
+            "mean_ic": round(mean_ic, 3) if mean_ic is not None else None,
+            "n_cutoffs": len(ics),
+            "n_obs": sum(len(pairs) for pairs in by_cutoff.values()),
+            "verdict": _ic_verdict(mean_ic),
+        }
+    return table
+
+
+def _ic_verdict(mean_ic: float | None) -> str:
+    if mean_ic is None:
+        return "no_data"
+    if mean_ic < 0:
+        return "wrong_sign"   # sign is backwards on this data -> zero it, don't trust it
+    if mean_ic < 0.03:
+        return "weak"         # indistinguishable from noise at this sample size
+    return "predictive"
+
+
+def _composite_raw(signals: dict, weights: dict) -> float | None:
+    """Re-derive raw_score from a signal vector + weights, with the same coverage
+    renormalisation scoring.score() uses. Lets us compare weightings on the SAME
+    backtest predictions without re-fetching or re-scoring."""
+    weighted_sum, used_weight = 0.0, 0.0
+    for metric, weight in weights.items():
+        signal = signals.get(metric)
+        if signal is not None and weight > 0:
+            weighted_sum += signal * weight
+            used_weight += weight
+    return weighted_sum / used_weight if used_weight > 0 else None
+
+
+def fit_weights(predictions: list[dict], shrink: float = 0.5, min_ic: float = 0.0,
+                persist: bool = False) -> dict | None:
+    """Set weights from per-signal ICs, REGULARISED for a tiny correlated sample:
+    drop signals whose IC is <= min_ic (wrong sign or noise), weight the survivors by
+    IC, then shrink toward equal weight (shrink=0.5 is a strong prior; equal-weight
+    composites are hard to beat out of sample). Returns weights summing to 1.0, or
+    None if no signal is predictive (keep the defaults). Fit on a FIT fold only."""
+    table = signal_ic_table(predictions)
+    candidates = {metric: stats["mean_ic"] for metric, stats in table.items()
+                  if stats["mean_ic"] is not None and stats["mean_ic"] > min_ic}
+    if not candidates:
+        return None
+    total_ic = sum(candidates.values())
+    equal = 1.0 / len(candidates)
+    weights = {metric: 0.0 for metric in scoring.METRIC_DIRECTION}
+    for metric, ic in candidates.items():
+        weights[metric] = shrink * (ic / total_ic) + (1 - shrink) * equal
+    total = sum(weights.values())
+    weights = {metric: round(weight / total, 4) for metric, weight in weights.items()}
+    if persist:
+        scoring.WEIGHTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with scoring.WEIGHTS_FILE.open("w") as weights_file:
+            json.dump({"weights": weights, "shrink": shrink, "min_ic": min_ic}, weights_file, indent=2)
+        scoring.reload_weights()
+    return weights
+
+
+def evaluate_weights(tickers: list[str] | None = None, fit_cutoffs: list[str] | None = None,
+                     eval_cutoffs: list[str] | None = None, horizon_days: int = HORIZON_DAYS) -> dict:
+    """Fit weights on the FIT cutoffs and compare them to the hand-set defaults on the
+    HELD-OUT cutoffs (out-of-sample), using each prediction's stored signal vector.
+    Does NOT persist - it tells you whether fitting even helps before you commit."""
+    fit_cutoffs = fit_cutoffs or DEFAULT_FIT_CUTOFFS
+    eval_cutoffs = eval_cutoffs or DEFAULT_EVAL_CUTOFFS
+    fit_report = run_backtest(tickers, fit_cutoffs, horizon_days, label="weight_fit")
+    table = signal_ic_table(fit_report["predictions"])
+    fitted = fit_weights(fit_report["predictions"], persist=False)
+    eval_report = run_backtest(tickers, eval_cutoffs, horizon_days, label="weight_eval")
+
+    def oos_rank_ic(weights: dict) -> float | None:
+        rescored = []
+        for p in eval_report["predictions"]:
+            raw = _composite_raw(p.get("signals") or {}, weights)
+            if raw is not None:
+                rescored.append({"raw_score": raw, "actual_alpha": p["actual_alpha"], "cutoff": p["cutoff"]})
+        return _rank_ic(rescored)["mean"]
+
+    return {
+        "signal_ic_table": table,
+        "default_weights": dict(scoring.DEFAULT_WEIGHTS),
+        "fitted_weights": fitted,
+        "default_oos_rank_ic": oos_rank_ic(scoring.DEFAULT_WEIGHTS),
+        "fitted_oos_rank_ic": oos_rank_ic(fitted) if fitted else None,
+        "fit_cutoffs": fit_cutoffs,
+        "eval_cutoffs": eval_cutoffs,
+        "note": "fitted helps only if fitted_oos_rank_ic clearly beats default_oos_rank_ic; otherwise keep defaults",
     }
 
 

@@ -8,6 +8,7 @@ import pytest
 from backtest import (
     forward_alpha, outcome_bucket, _price_on_or_after, _pearson, _summarise,
     fit_thresholds, _wilson_interval, _rank_ic,
+    signal_ic_table, fit_weights, _composite_raw,
 )
 
 UTC = timezone.utc
@@ -109,3 +110,46 @@ def test_wilson_interval_brackets_estimate():
     lo, hi = _wilson_interval(8, 10)
     assert 0 <= lo < 0.8 < hi <= 1
     assert _wilson_interval(0, 0) is None
+
+
+def _ic_preds():
+    """Two cutoffs; momentum_6m_vs_spy and revenue_growth signals rank with alpha
+    (IC +1), pe_ratio ranks against it (IC -1), eps_trend is constant (no signal)."""
+    preds = []
+    for cut in ("C1", "C2"):
+        for alpha in (0.10, 0.02, -0.05, -0.12):
+            preds.append({"cutoff": cut, "actual_alpha": alpha, "signals": {
+                "momentum_6m_vs_spy": alpha * 10, "revenue_growth": alpha * 5,
+                "pe_ratio": -alpha * 10, "eps_trend": 0.0,
+            }})
+    return preds
+
+
+def test_signal_ic_table_flags_sign_and_no_data():
+    table = signal_ic_table(_ic_preds())
+    assert table["momentum_6m_vs_spy"]["mean_ic"] == pytest.approx(1.0)
+    assert table["momentum_6m_vs_spy"]["verdict"] == "predictive"
+    assert table["pe_ratio"]["mean_ic"] == pytest.approx(-1.0)
+    assert table["pe_ratio"]["verdict"] == "wrong_sign"
+    assert table["eps_trend"]["verdict"] == "no_data"  # constant signal -> undefined correlation
+
+
+def test_fit_weights_drops_wrong_sign_and_normalises():
+    weights = fit_weights(_ic_preds(), persist=False)
+    assert weights["pe_ratio"] == 0.0                       # wrong sign -> zeroed
+    assert weights["eps_trend"] == 0.0                      # no signal -> zeroed
+    assert weights["momentum_6m_vs_spy"] > 0
+    assert weights["revenue_growth"] > 0
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
+def test_fit_weights_none_when_nothing_predictive():
+    preds = [{"cutoff": "C", "actual_alpha": a, "signals": {"pe_ratio": -a}}
+             for a in (0.10, 0.02, -0.05, -0.12)]
+    assert fit_weights(preds, persist=False) is None
+
+
+def test_composite_raw_renormalises_over_present_signals():
+    raw = _composite_raw({"a": 2.0, "b": -1.0, "c": None}, {"a": 0.5, "b": 0.5, "c": 0.0})
+    assert raw == pytest.approx(0.5)  # (2*0.5 + -1*0.5) / (0.5+0.5)
+    assert _composite_raw({"a": None}, {"a": 0.5}) is None
