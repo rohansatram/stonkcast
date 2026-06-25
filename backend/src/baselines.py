@@ -56,6 +56,11 @@ METRIC_DIRECTION: dict[str, int] = {
     "debt_to_equity": -1,    # less leverage is better
 }
 
+# Direct signals: already bounded in [-1, 1] and used as-is (NOT z-scored against
+# the sector). They're sparse and not sector-relative ratios, so peer-normalising
+# them is meaningless. metric -> direction (+ = bullish).
+DIRECT_METRICS: dict[str, int] = {"congress": +1}
+
 _baseline_cache: dict[tuple[str, str, str], dict] = {}
 
 

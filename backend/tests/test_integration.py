@@ -20,7 +20,7 @@ def test_score_ticker_shape():
     r = score_ticker("AAPL")
     assert r["score"] in {1, 2, 3, 4, 5}
     assert set(REQUIRED_METRICS).issubset(r["metrics"].keys())
-    assert len(r["breakdown"]) == 10  # 10 weighted metrics (incl. 6m momentum + 52w position)
+    assert len(r["breakdown"]) == 11  # 10 z-scored metrics + congress (direct signal)
     assert r["tokens"] == 0  # phase 1 has no LLM
     assert "recommendation_mean" in r["analyst_consensus_display_only"]
 

@@ -56,7 +56,7 @@ _pricing_key(DEFAULT_MODEL)
 
 
 def converse(user_text: str, system: str | None = None, model_id: str = DEFAULT_MODEL,
-             region: str = DEFAULT_REGION, max_tokens: int = 1200, temperature: float = 0.1) -> tuple[str, dict]:
+             region: str = DEFAULT_REGION, max_tokens: int = 1200, temperature: float = 0.05) -> tuple[str, dict]:
     """Single-turn Converse call. Returns (text, usage) where usage =
     {input_tokens, output_tokens, total_tokens, cost_usd, model}."""
     request = {

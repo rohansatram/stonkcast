@@ -1,42 +1,32 @@
 """
-US congressional stock trades (STOCK Act disclosures), point-in-time, via Quiver
-Quantitative.
+US congressional stock trades (STOCK Act disclosures), point-in-time.
 
 Members of Congress must publicly disclose personal stock trades within 45 days.
 We expose a per-ticker signal: how many purchases vs sales were DISCLOSED before a
 cutoff, in a trailing window. The gate is the DISCLOSURE (filing/report) date, not
-the trade date, so it stays leak-free, the disclosure lag is real and respected.
+the trade date, so it stays leak-free; the disclosure lag is real and respected.
 
-Needs a free Quiver API key in backend/.env:  QUIVER_API_KEY=...
+Data source: a downloaded dataset in backend/data/ (CSV or JSON, Stock-Watcher /
+Capitol-Trades schema). Generate one with dump_capitol_trades_playwright.py. If no
+dataset is present, the signal is simply unavailable (neutral), no network needed.
 
-    from fetch.fetchCongressTrades import congress_signal
+    from fetch.fetchCongressTrades import congress_signal, congress_score
     sig = congress_signal("NVDA", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    value = congress_score(sig)   # [-1, 1] math signal, or None
 """
 
 import csv
 import json
-import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import requests
-from dotenv import load_dotenv
-
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-from cache import cached_fetch  # noqa: E402
-
-load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
-
-# Drop a downloaded congress-trades dataset (CSV or JSON, Stock-Watcher schema) here
-# and it becomes the source, no API/key/network needed. Falls back to the API only
-# when this folder is empty.
+# Drop a downloaded congress-trades dataset (CSV or JSON) in backend/data/ and it
+# becomes the source. Absent that, the signal is unavailable (no network/keys).
 LOCAL_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
-QUIVER_BASE = "https://api.quiverquant.com"
-CACHE_TTL = timedelta(hours=24)  # disclosures are append-only; a daily refresh is plenty
 DEFAULT_WINDOW_DAYS = 90
-RECENT_SAMPLE = 5  # how many recent trades to surface for display / the LLM
+RECENT_SAMPLE = 5  # how many recent trades to surface for display / the UI
 
 
 def _to_utc(dt: datetime) -> datetime:
@@ -72,7 +62,7 @@ def _side(trade_type) -> str | None:
 
 
 def _first(record: dict, *keys):
-    """First present value among alternative key spellings (our schema or Quiver's)."""
+    """First present value among alternative key spellings (our schema or others')."""
     for key in keys:
         if record.get(key) not in (None, ""):
             return record[key]
@@ -102,8 +92,8 @@ _local_cache: dict = {"loaded": False, "data": None}
 
 def _load_local_all(refresh: bool = False) -> list[dict] | None:
     """All trades from any CSV/JSON dataset files in backend/data/, normalised.
-    Returns None when the folder is absent/empty (so the caller falls back to the
-    API). Memoised in-process; pass refresh=True to re-read."""
+    Returns None when the folder is absent/empty (so the signal is unavailable).
+    Memoised in-process; pass refresh=True to re-read."""
     if not refresh and _local_cache["loaded"]:
         return _local_cache["data"]
 
@@ -128,31 +118,14 @@ def _load_local_all(refresh: bool = False) -> list[dict] | None:
     return result
 
 
-def _fetch_ticker_trades(ticker: str) -> list[dict]:
-    api_key = os.getenv("QUIVER_API_KEY")
-    if not api_key:
-        raise RuntimeError("QUIVER_API_KEY not set in backend/.env")
-    url = f"{QUIVER_BASE}/beta/historical/congresstrading/{ticker.upper()}"
-    response = requests.get(url, headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"}, timeout=30)
-    response.raise_for_status()
-    data = response.json()
-    return data if isinstance(data, list) else []
-
-
-def _load_ticker(ticker: str, refresh: bool = False) -> list[dict]:
-    raw = cached_fetch(f"CONGRESS_{ticker.upper()}", lambda _k: _fetch_ticker_trades(ticker),
-                       refresh=refresh, max_age=CACHE_TTL)
-    return [n for n in (_normalize(r) for r in raw) if n is not None]
-
-
 def congress_signal(ticker: str, cutoff: datetime, window_days: int = DEFAULT_WINDOW_DAYS,
                     transactions: list[dict] | None = None, refresh: bool = False) -> dict:
     """
     Point-in-time congressional-trading signal for `ticker`: purchases vs sales
     DISCLOSED in the [cutoff - window, cutoff) window. `transactions` (already
-    normalised) can be injected for testing; otherwise it's loaded (cached) from
-    Quiver. On any fetch failure (no key, 401, network) returns available=False
-    with a neutral 'none' signal, so the agent degrades gracefully.
+    normalised) can be injected for testing; otherwise it's loaded from the local
+    dataset. With no dataset present, returns available=False with a neutral
+    'none' signal so the agent degrades gracefully.
     """
     ticker = ticker.upper()
     cutoff = _to_utc(cutoff)
@@ -161,14 +134,10 @@ def congress_signal(ticker: str, cutoff: datetime, window_days: int = DEFAULT_WI
     available, error, source = True, None, "injected"
     if transactions is None:
         local = _load_local_all(refresh=refresh)
-        if local is not None:  # a downloaded dataset is present -> use it (no network)
+        if local is not None:  # a downloaded dataset is present -> use it
             transactions, source = [t for t in local if t["ticker"] == ticker], "local-dataset"
         else:
-            source = "quiver-api"
-            try:
-                transactions = _load_ticker(ticker, refresh=refresh)
-            except Exception as exc:
-                transactions, available, error = [], False, f"{type(exc).__name__}: {exc}"
+            transactions, available, error, source = [], False, "no congress dataset in backend/data/", "none"
 
     relevant = [
         t for t in transactions
@@ -217,6 +186,23 @@ def congress_signal(ticker: str, cutoff: datetime, window_days: int = DEFAULT_WI
     }
 
 
+def congress_score(signal: dict | None) -> float | None:
+    """
+    Map a congress_signal() result to a [-1, 1] math signal (+ = net buying).
+
+    Net-buying intensity = (buys - sells) / (buys + sells). Returns None when the
+    data is unavailable or no trades fall in the window, so it contributes nothing
+    to the score rather than dragging it toward neutral.
+    """
+    if not signal or not signal.get("available"):
+        return None
+    purchases, sales = signal.get("purchases", 0), signal.get("sales", 0)
+    total = purchases + sales
+    if total == 0:
+        return None
+    return (purchases - sales) / total
+
+
 if __name__ == "__main__":
     ticker = sys.argv[1] if len(sys.argv) > 1 else "NVDA"
     cutoff = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -226,10 +212,12 @@ if __name__ == "__main__":
     sig = congress_signal(ticker, cutoff)
     if not sig["available"]:
         print(f"Congress data unavailable: {sig['error']}")
+        print("Generate a dataset with: uv run python src/fetch/dump_capitol_trades_playwright.py")
         raise SystemExit(1)
     print(f"\nCongress trades for {sig['ticker']} disclosed in the {sig['window_days']}d before {sig['as_of']}:")
     print(f"  {sig['purchases']} purchases / {sig['sales']} sales  ->  {sig['signal']}  "
           f"(net {sig['net_trades']:+d} trades, ${sig['net_usd_est']:+,} est) across {sig['n_members']} member(s)")
+    print(f"  math signal = {congress_score(sig)}")
     for trade in sig["recent"]:
         amt = f"${trade['amount_usd_est']:,}" if trade["amount_usd_est"] else "n/a"
         print(f"    {trade['disclosed']}  {trade['side']:4s}  {amt:>12s}  {trade['member']}")

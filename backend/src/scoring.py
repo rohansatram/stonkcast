@@ -14,7 +14,7 @@ import json
 import statistics
 from pathlib import Path
 
-from baselines import METRIC_DIRECTION
+from baselines import METRIC_DIRECTION, DIRECT_METRICS
 
 # Default weights (sum to 1.0). These are STARTING POINTS, not fitted values; the
 # horizon-aligned 6-month momentum carries the most, the reversal-prone 1-month
@@ -42,6 +42,11 @@ METRIC_FAMILY: dict[str, str] = {
     "eps_trend": "earnings", "earnings_surprise": "earnings", "pe_ratio": "earnings",
     "revenue_growth": "statement", "ebitda_margin": "statement", "debt_to_equity": "statement",
 }
+
+# Direct (non-z-scored) signal weights, kept SEPARATE from the fitted z-score
+# WEIGHTS above so weight-fitting can't zero them out. congress is sparse and only
+# contributes when trades fall in the window; otherwise it's absent (no penalty).
+DIRECT_WEIGHTS: dict[str, float] = {"congress": 0.06}
 
 Z_CLIP = 3.0  # clip z-scores so one wild peer can't dominate
 MIN_COVERAGE_FOR_CALL = 0.4   # below this, too little data to make a directional call -> Hold
@@ -167,6 +172,25 @@ def score(metrics: dict, baseline: dict) -> dict:
 
         breakdown.append(breakdown_entry)
 
+    # Direct signals (e.g. congress): already bounded in [-1, 1], used as-is with no
+    # sector z-score. Each is its own data family, so it can support an extreme call.
+    for metric, direction in DIRECT_METRICS.items():
+        weight = DIRECT_WEIGHTS.get(metric, 0.0)
+        raw_value = metrics.get(metric)
+        breakdown_entry = {
+            "metric": metric, "raw": raw_value,
+            "sector_mean": None, "sector_std": None, "sector_n": None,
+            "z": None, "signal": None, "weight": weight, "contribution": 0.0,
+        }
+        if raw_value is not None and weight > 0:
+            signal = max(-1.0, min(1.0, raw_value)) * direction
+            contribution = signal * weight
+            breakdown_entry.update({"signal": signal, "contribution": contribution})
+            weighted_sum += contribution
+            used_weight += weight
+            families_present.add(metric)
+        breakdown.append(breakdown_entry)
+
     # Renormalise by the weight actually used, so missing metrics don't drag the
     # score toward 0 (a stock with only half its metrics still gets a fair read).
     raw_score = weighted_sum / used_weight if used_weight > 0 else 0.0
@@ -200,7 +224,7 @@ def score(metrics: dict, baseline: dict) -> dict:
         "label": SCORE_LABELS[bucket],
         "raw_score": round(raw_score, 4),
         "confidence": confidence,
-        "coverage": round(used_weight, 3),  # fraction of weight backed by real data
+        "coverage": round(min(used_weight, 1.0), 3),  # capped: direct signals can push the raw sum >1
         "families": sorted(families_present),
         "median_peer_count": median_peers,
         "breakdown": breakdown,

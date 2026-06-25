@@ -2,7 +2,7 @@
 
 import pytest
 
-from scoring import score, _bucket, _zscore, Z_CLIP, METRIC_FAMILY
+from scoring import score, _bucket, _zscore, Z_CLIP, METRIC_FAMILY, DIRECT_WEIGHTS
 from baselines import METRIC_DIRECTION
 
 UNIT_BASELINE = {m: {"mean": 0.0, "std": 1.0} for m in METRIC_DIRECTION}
@@ -113,3 +113,24 @@ def test_thin_peer_baseline_caps_confidence():
     r = score(m, thin)
     assert r["median_peer_count"] == 4
     assert r["confidence"] == "medium"  # downgraded: median peer count 4 < 6
+
+
+def test_congress_direct_signal_contributes_without_baseline():
+    # congress is a direct signal: used as-is, no sector baseline needed.
+    result = score({"congress": 1.0}, {})
+    entry = next(e for e in result["breakdown"] if e["metric"] == "congress")
+    assert entry["signal"] == pytest.approx(1.0)          # net buying -> bullish
+    assert entry["z"] is None                              # not z-scored
+    assert result["raw_score"] == pytest.approx(1.0)       # only signal present
+    assert result["coverage"] == pytest.approx(DIRECT_WEIGHTS["congress"])
+
+
+def test_congress_signal_is_clamped():
+    entry = next(e for e in score({"congress": 9.0}, {})["breakdown"] if e["metric"] == "congress")
+    assert entry["signal"] == pytest.approx(1.0)           # clamped into [-1, 1]
+
+
+def test_congress_absent_is_neutral():
+    result = score({"congress": None}, UNIT_BASELINE)
+    entry = next(e for e in result["breakdown"] if e["metric"] == "congress")
+    assert entry["contribution"] == 0.0                    # no data -> no effect

@@ -11,7 +11,13 @@ def _phase1_result():
         "breakdown": [
             {"metric": "momentum_vs_spy", "raw": -0.042, "signal": -0.57, "weight": 0.20},
             {"metric": "pe_ratio", "raw": 36.4, "signal": 0.19, "weight": 0.10},
+            {"metric": "congress", "raw": 1.0, "signal": 0.06, "weight": 0.06},
         ],
+        "congress": {
+            "available": True, "signal": "net buying", "window_days": 90,
+            "purchases": 3, "sales": 1, "net_trades": 2, "n_members": 2,
+            "recent": [{"member": "Jane Doe", "side": "buy", "amount_usd_est": 50000, "disclosed": "2025-12-01"}],
+        },
     }
 
 
@@ -44,25 +50,18 @@ def test_user_prompt_handles_missing_filing():
     assert "none available" in prompt
 
 
-def _congress(signal="net buying"):
-    return {"available": True, "signal": signal, "window_days": 90,
-            "purchases": 3, "sales": 0, "n_members": 2}
-
-
-def test_prompt_includes_congress_when_available():
-    prompt = build_user_prompt(_phase1_result(), _filing(), congress=_congress())
-    assert "CONGRESSIONAL TRADES" in prompt
+def test_congress_in_both_breakdown_and_prompt_block():
+    # Congress is used in BOTH places: a quant metric (breakdown) AND a rich prompt block.
+    prompt = build_user_prompt(_phase1_result(), _filing())
+    assert "congress" in prompt                 # the quant signal line in the breakdown
+    assert "CONGRESSIONAL TRADES" in prompt      # the rich qualitative block for Nova
     assert "3 buys" in prompt
+    assert "Jane Doe" in prompt                  # recent trade detail
 
 
-def test_prompt_omits_congress_when_anonymized():
-    # member names could hint at a famous trade, so the leakage probe withholds it
-    prompt = build_user_prompt(_phase1_result(), _filing(), congress=_congress(), anonymize=True)
-    assert "CONGRESSIONAL TRADES" not in prompt
-
-
-def test_prompt_omits_congress_when_unavailable():
-    prompt = build_user_prompt(_phase1_result(), _filing(), congress={"available": False})
+def test_congress_block_withheld_when_anonymized():
+    # member names could hint identity, so the leakage probe withholds the block
+    prompt = build_user_prompt(_phase1_result(), _filing(), anonymize=True)
     assert "CONGRESSIONAL TRADES" not in prompt
 
 

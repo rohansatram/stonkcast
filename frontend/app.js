@@ -49,6 +49,7 @@ function resetView() {
   ["status", "error", "result"].forEach((id) => { el(id).hidden = true; });
   el("status-text").textContent = "";
   ["demo-ticker", "live-ticker"].forEach((id) => { el(id).value = ""; });
+  document.body.classList.remove("working");  // back to the centered landing layout
 }
 
 // --- Forms ---
@@ -216,6 +217,7 @@ function escapeHtml(text) {
 
 function showOnly(sectionId) {
   ["status", "error", "result"].forEach((id) => { el(id).hidden = id !== sectionId; });
+  document.body.classList.add("working");  // top-align the layout while a run is shown
 }
 
 function showError(message) {

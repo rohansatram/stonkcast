@@ -22,7 +22,6 @@ from datetime import datetime
 
 from phase1 import score_ticker, DEFAULT_CUTOFF
 from fetch.fetchSECFilings import fetch_filing
-from fetch.fetchCongressTrades import congress_signal
 from nova import converse, DEFAULT_MODEL
 
 SYSTEM_PROMPT = (
@@ -48,9 +47,10 @@ SYSTEM_PROMPT = (
     "- risk_flags must be SPECIFIC to THIS company and drawn from the provided text "
     "(a named product, customer, geography, regulation, or dependency). Do NOT list "
     "generic risks like 'competition', 'supply chain', or 'macroeconomic conditions'.\n"
-    "- If CONGRESSIONAL TRADES are shown, treat net buying as a mild bullish tilt and "
-    "net selling as mild bearish, but weight them LIGHTLY (disclosures lag the trade by "
-    "up to 45 days). Never let them override clear fundamentals.\n"
+    "- CONGRESSIONAL TRADES may be shown (and are also reflected in the quant 'congress' "
+    "signal). Treat net buying as a mild bullish tilt and net selling as mild bearish, but "
+    "weight them LIGHTLY (disclosures lag the trade by up to 45 days) and never let them "
+    "override clear fundamentals.\n"
     "- Respond with ONLY a JSON object, no prose before or after, in exactly this shape:\n"
     '{"final_score": <1-5 int>, "risk_flags": [<specific short strings>], '
     '"rationale": "<2-4 sentences>"}'
@@ -67,8 +67,7 @@ def _section_line(label: str, text: str, quality: str) -> list[str]:
     return ["", f"--- {label} ---", "(not reliably available in this filing)"]
 
 
-def build_user_prompt(phase1_result: dict, filing: dict, congress: dict | None = None,
-                      anonymize: bool = False) -> str:
+def build_user_prompt(phase1_result: dict, filing: dict, anonymize: bool = False) -> str:
     """Compose the user message: the quant breakdown + the filing excerpt.
 
     `anonymize` withholds the ticker/name (used by the backtest leakage probe, so a
@@ -106,14 +105,20 @@ def build_user_prompt(phase1_result: dict, filing: dict, congress: dict | None =
     else:
         lines += ["", "SEC FILING: none available before cutoff."]
 
-    # Congressional trades, withheld under anonymize (member names could hint identity).
+    # Congressional trades: rich qualitative context for Nova (the same signal is also
+    # in the quant breakdown). Withheld under anonymize: member names hint at identity.
+    congress = phase1_result.get("congress")
     if congress and congress.get("available") and not anonymize:
-        if congress["signal"] == "none":
-            lines += ["", f"CONGRESSIONAL TRADES: none disclosed in the {congress['window_days']}d before cutoff."]
+        if congress.get("signal") == "none":
+            lines += ["", f"CONGRESSIONAL TRADES: none disclosed in the {congress.get('window_days')}d before cutoff."]
         else:
-            lines += ["", f"CONGRESSIONAL TRADES (disclosed in {congress['window_days']}d before cutoff): "
-                          f"{congress['purchases']} buys, {congress['sales']} sales by "
-                          f"{congress['n_members']} member(s) -> {congress['signal']}"]
+            lines += ["", f"CONGRESSIONAL TRADES (disclosed in the {congress.get('window_days')}d before cutoff; "
+                          f"also in the quant 'congress' signal): {congress.get('purchases')} buys, "
+                          f"{congress.get('sales')} sales by {congress.get('n_members')} member(s) "
+                          f"-> {congress.get('signal')}"]
+            for trade in (congress.get("recent") or [])[:5]:
+                amount = f"~${trade['amount_usd_est']:,}" if trade.get("amount_usd_est") else "n/a"
+                lines.append(f"  - {trade.get('member')}: {trade.get('side')} {amount} (disclosed {trade.get('disclosed')})")
 
     lines += ["", "Return the JSON object now."]
     return "\n".join(lines)
@@ -182,25 +187,20 @@ def score_ticker_v2(ticker: str, cutoff: datetime = DEFAULT_CUTOFF,
         if on_stage:
             on_stage(message)
 
-    # Quant score, SEC filing, and congress trades are independent, so fetch them
-    # concurrently (the network time hides under Phase 1's).
-    emit("Computing quant score, fetching filing + congress trades...")
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    # Quant score (which now includes the congress signal) and the SEC filing are
+    # independent, so fetch them concurrently (network time hides under Phase 1's).
+    emit("Computing quant score, fetching filing...")
+    with ThreadPoolExecutor(max_workers=2) as pool:
         phase1_future = pool.submit(score_ticker, ticker, cutoff, refresh=refresh)
         filing_future = pool.submit(fetch_filing, ticker, cutoff, refresh=refresh)
-        congress_future = pool.submit(congress_signal, ticker, cutoff)
         phase1_result = phase1_future.result()
         filing = filing_future.result()
-        try:
-            congress = congress_future.result()
-        except Exception:
-            congress = None  # congress is a nice-to-have; never let it break scoring
     if "error" in phase1_result:
         return phase1_result
     filing_block = filing.get("filing") or {}
 
     emit("Reasoning with Amazon Nova...")
-    user_prompt = build_user_prompt(phase1_result, filing, congress=congress, anonymize=anonymize)
+    user_prompt = build_user_prompt(phase1_result, filing, anonymize=anonymize)
     reply_text, usage = converse(user_prompt, system=SYSTEM_PROMPT, model_id=model_id)
     nova_result = _parse_nova_json(reply_text, fallback_score=phase1_result["score"])
 
@@ -234,14 +234,7 @@ def score_ticker_v2(ticker: str, cutoff: datetime = DEFAULT_CUTOFF,
         "rationale": nova_result.get("rationale"),
         "filing_used": filing_block.get("type"),
         "filing_quality": {"mdna": filing_block.get("mdna_quality"), "risk": filing_block.get("risk_quality")},
-        "congress": {
-            "available": congress.get("available"),
-            "signal": congress.get("signal"),
-            "purchases": congress.get("purchases"),
-            "sales": congress.get("sales"),
-            "net_trades": congress.get("net_trades"),
-            "recent": congress.get("recent", []),
-        } if congress else None,
+        "congress": phase1_result.get("congress"),  # computed in Phase 1, now part of the quant score
         "phase1": phase1_result,
         "tokens": usage["total_tokens"],
         "token_usage": usage,            # input/output/total + model, for the UI counter

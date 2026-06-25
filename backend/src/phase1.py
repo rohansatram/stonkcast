@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timezone
 
 from fetch.fetchStockData import fetch_cached
+from fetch.fetchCongressTrades import congress_signal, congress_score
 from cache import fetched_at
 from metrics import compute_metrics
 from baselines import sector_baseline
@@ -42,6 +43,11 @@ def score_ticker(ticker: str, cutoff: datetime = DEFAULT_CUTOFF, refresh: bool =
             "latency_sec": round(time.time() - started, 3),
         }
 
+    # Congressional trades: a direct (non-z-scored) math signal, point-in-time by
+    # disclosure date. Neutral (None) when no dataset is present in backend/data/.
+    congress = congress_signal(ticker, cutoff)
+    metrics["congress"] = congress_score(congress)
+
     sector = data["info"].get("sector")
     baseline = sector_baseline(sector, cutoff, spy_prices, exclude=ticker, refresh=refresh) if sector else {}
     result = score(metrics, baseline)
@@ -68,7 +74,18 @@ def score_ticker(ticker: str, cutoff: datetime = DEFAULT_CUTOFF, refresh: bool =
             "momentum_vs_spy": metrics.get("momentum_vs_spy"),
             "earnings_surprise": metrics.get("earnings_surprise"),
             "volatility": metrics.get("volatility"),
+            "congress": metrics.get("congress"),
         },
+        "congress": {
+            "available": congress.get("available"),
+            "signal": congress.get("signal"),
+            "purchases": congress.get("purchases"),
+            "sales": congress.get("sales"),
+            "net_trades": congress.get("net_trades"),
+            "n_members": congress.get("n_members"),
+            "window_days": congress.get("window_days"),
+            "recent": congress.get("recent", []),
+        } if congress else None,
         "analyst_consensus_display_only": {
             "recommendation_mean": data["info"].get("recommendation_mean"),
             "recommendation_key": data["info"].get("recommendation_key"),

@@ -37,7 +37,18 @@ body {
 .masthead h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
 .masthead p { margin: 4px 0 0; color: var(--peach); font-size: 14px; }
 
-main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
+main {
+  max-width: 760px; margin: 0 auto; padding: 24px 16px 64px;
+  /* Landing state: push the form toward the vertical center with top padding.
+     Padding (unlike flex justify-content) can transition, so starting a run
+     slides the form up smoothly instead of snapping to the top. */
+  padding-top: 22vh;
+  transition: padding-top 0.45s ease;
+}
+/* Once a run starts, ease back to a normal top offset so results flow/scroll. */
+body.working main { padding-top: 24px; }
+
+@media (prefers-reduced-motion: reduce) { main { transition: none; } }
 
 /* Tabs */
 .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
