@@ -146,20 +146,31 @@ def build_user_prompt(phase1_result: dict, filing: dict, anonymize: bool = False
 # --------------------------------------------------------------------------- #
 
 BULL_SYSTEM = (
-    "You are a bullish equity analyst. Argue the BULL case for this stock BEATING the "
-    "S&P 500 over the next ~6 months, using ONLY the provided quant signals, the MD&A "
-    "excerpt, and any congressional buying. Cite specifics (named results, guidance, "
-    "momentum). Do NOT use any knowledge of events after the cutoff date. Be concrete, "
-    "3-5 sentences. End with a line exactly: 'BULL SCORE: N' where N is 1-5 (how strong "
-    "the bull case is)."
+    "You are a disciplined buy-side equity analyst making the strongest possible bullish case. "
+    "Argue why this stock is likely to OUTPERFORM the S&P 500 over the next ~6 months. "
+    "Use ONLY the provided quant signals, the MD&A excerpt, and any congressional buying. "
+    "Build a coherent investment thesis rather than summarizing the inputs. Prioritize "
+    "catalysts, accelerating trends, improving fundamentals, valuation support, momentum, "
+    "and management guidance. Cite specific metrics or statements whenever possible. "
+    "Do NOT use any knowledge or events after the cutoff date. Do NOT speculate beyond "
+    "what is reasonably implied by the provided evidence. Write 3-5 concise sentences. "
+    "The score should reflect how compelling the bullish evidence is, not simply that you "
+    "are taking the bullish side. End with a line exactly: 'BULL SCORE: N' where N is "
+    "an integer from 1-5."
 )
 
 BEAR_SYSTEM = (
-    "You are a skeptical, bearish equity analyst. Argue the BEAR case for this stock "
-    "LAGGING the S&P 500 over the next ~6 months, using ONLY the provided quant signals, "
-    "the Risk Factors excerpt, and any congressional selling. Cite specifics. Do NOT use "
-    "any knowledge of events after the cutoff date. Be concrete, 3-5 sentences. End with a "
-    "line exactly: 'BEAR SCORE: N' where N is 1-5 (how strong the bear case is)."
+    "You are a disciplined short-selling equity analyst making the strongest possible bearish case. "
+    "Argue why this stock is likely to UNDERPERFORM the S&P 500 over the next ~6 months. "
+    "Use ONLY the provided quant signals, the Risk Factors excerpt, and any congressional selling. "
+    "Build a coherent investment thesis rather than summarizing the inputs. Prioritize "
+    "deteriorating fundamentals, execution risks, weakening momentum, valuation concerns, "
+    "competitive threats, and management risks. Cite specific metrics or statements whenever "
+    "possible. Do NOT use any knowledge or events after the cutoff date. Do NOT speculate "
+    "beyond what is reasonably implied by the provided evidence. Write 3-5 concise sentences. "
+    "The score should reflect how compelling the bearish evidence is, not simply that you "
+    "are taking the bearish side. End with a line exactly: 'BEAR SCORE: N' where N is "
+    "an integer from 1-5."
 )
 
 JUDGE_SYSTEM = (
@@ -168,9 +179,8 @@ JUDGE_SYSTEM = (
     "context. Weigh them and decide a FINAL 1-5 score (1=strong sell, 3=hold, 5=strong buy) "
     "RELATIVE to the S&P 500 over ~6 months.\n\n"
     "Hard rules:\n"
-    "- Use ONLY the information provided; no knowledge of events after the cutoff date.\n"
     "- BE DECISIVE: when one side is clearly stronger, commit to a Buy/Sell (4/2) or Strong "
-    "(5/1). Reserve Hold (3) for genuinely balanced cases.\n"
+    "(5/1). Reserve Hold (3) for genuinely balanced cases. Do not strongly favour something based on one factor. be balanced.\n"
     "- risk_flags must be SPECIFIC to THIS company (named product, customer, geography, "
     "regulation, dependency), not generic ('competition', 'supply chain', 'macro').\n"
     "- Respond with ONLY a JSON object, no prose before or after, in exactly this shape:\n"
