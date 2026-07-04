@@ -1,0 +1,10 @@
+.venv/
+.env
+backend/cache/
+__pycache__/
+*.pyc
+server.log
+.server.pid
+backend/data/*.csv
+backend/data/*.json
+.DS_Store

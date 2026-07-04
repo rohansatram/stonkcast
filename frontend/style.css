@@ -1,0 +1,174 @@
+:root {
+  --tangerine: #FF6B35;  /* sell / miss / alert */
+  --peach: #F7C59F;      /* hold / soft accent */
+  --beige: #EFEFD0;      /* page background */
+  --azure: #004E89;      /* header / strong buy / ink */
+  --baltic: #1A659E;     /* primary / buy */
+
+  --ink: #1b2a3a;
+  --muted: #5d6b78;
+  --card: #ffffff;
+  --line: #e2e2c8;
+  --radius: 14px;
+  --shadow: 0 6px 24px rgba(0, 78, 137, 0.12);
+}
+
+* { box-sizing: border-box; }
+
+/* The hidden attribute must win over any display rule below (e.g. .status uses
+   display:flex), otherwise JS can't actually hide the status/error/result. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--ink);
+  line-height: 1.5;
+  min-height: 100vh;
+  /* the stonks man, full strength (content sits on solid cards so it stays readable) */
+  background: url("/static/bg.png") center top / cover fixed, var(--beige);
+}
+
+.masthead {
+  background: var(--azure);
+  color: #fff;
+  padding: 28px 24px;
+}
+.masthead h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
+.masthead p { margin: 4px 0 0; color: var(--peach); font-size: 14px; }
+
+main {
+  max-width: 760px; margin: 0 auto; padding: 24px 16px 64px;
+  /* Landing state: push the form toward the vertical center with top padding.
+     Padding (unlike flex justify-content) can transition, so starting a run
+     slides the form up smoothly instead of snapping to the top. */
+  padding-top: 22vh;
+  transition: padding-top 0.45s ease;
+}
+/* Once a run starts, ease back to a normal top offset so results flow/scroll. */
+body.working main { padding-top: 24px; }
+
+@media (prefers-reduced-motion: reduce) { main { transition: none; } }
+
+/* Tabs */
+.tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.tab {
+  flex: 1; padding: 12px; border: 1px solid var(--line); background: #fff;
+  border-radius: var(--radius); font-size: 15px; font-weight: 600; color: var(--muted);
+  cursor: pointer; transition: all 0.15s;
+}
+.tab.active { background: var(--baltic); color: #fff; border-color: var(--baltic); }
+
+/* Panels */
+.panel { display: none; }
+.panel.active { display: block; }
+.panel-note {
+  font-size: 14px; color: var(--ink); margin: 4px 0 14px;
+  background: rgba(255, 255, 255, 0.92); padding: 10px 14px; border-radius: 10px;
+}
+
+.controls {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: end;
+  background: var(--card); padding: 18px; border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.controls label { display: flex; flex-direction: column; font-size: 12px; font-weight: 600; color: var(--muted); gap: 6px; }
+.controls input {
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 15px; color: var(--ink);
+  background: #fff;
+}
+.controls input[type="text"] { text-transform: uppercase; width: 130px; }
+.controls input[type="text"]::placeholder { text-transform: none; color: #b3b39a; }
+.run {
+  margin-left: auto; padding: 11px 22px; border: none; border-radius: 10px;
+  background: var(--tangerine); color: #fff; font-size: 15px; font-weight: 700; cursor: pointer;
+}
+.run:hover { background: #e85a26; }
+
+/* Status / spinner */
+.status {
+  display: flex; align-items: center; gap: 12px; margin-top: 20px;
+  background: var(--card); padding: 18px; border-radius: var(--radius); box-shadow: var(--shadow);
+  font-weight: 600; color: var(--baltic);
+}
+.spinner {
+  width: 20px; height: 20px; border: 3px solid var(--peach); border-top-color: var(--tangerine);
+  border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.error {
+  margin-top: 20px; padding: 16px; border-radius: var(--radius);
+  background: #ffe8df; color: var(--tangerine); border: 1px solid #ffc4ac; font-weight: 600;
+}
+
+/* Debate (bull vs bear, streams live) */
+.debate { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 20px; }
+.debate-col {
+  background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 16px 18px; border-top: 4px solid var(--line);
+}
+.debate-col.bull-col { border-top-color: var(--baltic); }
+.debate-col.bear-col { border-top-color: var(--tangerine); }
+.debate-col h3 { margin: 0 0 10px; font-size: 15px; }
+.debate-text { font-size: 14px; line-height: 1.55; color: var(--ink); white-space: pre-wrap; min-height: 1.5em; }
+/* blinking cursor while a side is still streaming */
+.debate-text.streaming::after {
+  content: "▋"; margin-left: 1px; color: var(--muted);
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink { to { visibility: hidden; } }
+@media (max-width: 560px) { .debate { grid-template-columns: 1fr; } }
+
+/* Result */
+.result { margin-top: 20px; background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.result-head { display: flex; gap: 18px; padding: 22px; align-items: center; border-bottom: 1px solid var(--line); }
+
+.score-badge {
+  width: 92px; height: 92px; border-radius: 18px; flex-shrink: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  color: #fff; background: var(--peach);
+}
+.score-badge span { font-size: 40px; font-weight: 800; line-height: 1; }
+.score-badge small { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+.score-1, .score-2 { background: var(--tangerine); }
+.score-3 { background: var(--peach); color: var(--azure); }
+.score-4 { background: var(--baltic); }
+.score-5 { background: var(--azure); }
+
+.result-meta h2 { margin: 0; font-size: 22px; }
+.result-meta .muted { margin: 2px 0 8px; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; font-weight: 500; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 20px;
+  background: var(--beige); color: var(--baltic); border: 1px solid var(--peach);
+}
+
+.block { padding: 20px 22px; border-bottom: 1px solid var(--line); }
+.block h3 { margin: 0 0 8px; font-size: 15px; }
+.block p { margin: 0; }
+
+.flags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.flag {
+  font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 8px;
+  background: #ffe8df; color: var(--tangerine);
+}
+.flag.congress-buy { background: #dceaf3; color: var(--baltic); }
+.flag.congress-sell { background: #ffe8df; color: var(--tangerine); }
+
+/* Outcome */
+.outcome-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 14px; margin-top: 6px; }
+.outcome-grid .k { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: 0.4px; }
+.outcome-grid .v { display: block; font-size: 18px; font-weight: 700; margin-top: 2px; }
+.pos { color: var(--baltic); }
+.neg { color: var(--tangerine); }
+.verdict { display: inline-block; margin-top: 2px; padding: 4px 12px; border-radius: 8px; font-weight: 800; font-size: 14px; }
+.verdict.hit { background: #dceaf3; color: var(--azure); }
+.verdict.miss { background: #ffe8df; color: var(--tangerine); }
+.verdict.na { background: var(--beige); color: var(--muted); }
+
+/* Meter / token counter */
+.meter { display: flex; flex-wrap: wrap; gap: 18px; padding: 16px 22px; background: var(--beige); font-size: 14px; }
+.meter-item strong { color: var(--azure); font-size: 16px; }
